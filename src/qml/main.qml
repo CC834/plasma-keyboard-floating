@@ -11,6 +11,7 @@ import QtQuick.VirtualKeyboard.Settings
 import QtCore as QtCore
 import QtQuick.Controls as QQC2
 import QtMultimedia
+import QtQuick.Layouts
 
 import org.kde.plasma.keyboard
 import org.kde.plasma.keyboard.lib as PlasmaKeyboard
@@ -24,10 +25,10 @@ InputPanelWindow {
     readonly property real availableScreenHeight: Screen.height > 0 ? Screen.height : 800
     minimumWidth: Math.min(440, availableScreenWidth - screenMargin * 2)
     maximumWidth: Math.max(minimumWidth, availableScreenWidth - screenMargin * 2)
-    minimumHeight: Math.min(220, availableScreenHeight - screenMargin * 2)
+    minimumHeight: Math.min(264, availableScreenHeight - screenMargin * 2)
     maximumHeight: Math.max(minimumHeight, Math.min(600, availableScreenHeight - screenMargin * 2))
     width: 772
-    height: 324
+    height: 368
 
     function fitToScreen() {
         if (!visible) {
@@ -71,6 +72,8 @@ InputPanelWindow {
         property real keyboardScale: 0.9 // Migrate the previous proportional size.
         property real keyboardWidth: 0
         property real keyboardHeight: 0
+        property string keyboardLocale: ""
+        property bool hasSuggestionBar: false
     }
 
     Component.onCompleted: {
@@ -79,6 +82,10 @@ InputPanelWindow {
         const savedHeight = floatingKeyboardState.keyboardHeight;
         width = Number.isFinite(savedWidth) && savedWidth > 0 ? savedWidth : 840 * scale + panelWrapper.sidePadding * 2;
         height = Number.isFinite(savedHeight) && savedHeight > 0 ? savedHeight : 280 * scale + panelWrapper.topPadding + panelWrapper.bottomPadding;
+        if (!floatingKeyboardState.hasSuggestionBar) {
+            height += suggestionBar.height;
+            floatingKeyboardState.hasSuggestionBar = true;
+        }
     }
 
     onVisibleChanged: {
@@ -101,6 +108,7 @@ InputPanelWindow {
         id: thing
         focus: true
         engine: inputPanel.InputContext.inputEngine
+        suggestionLocale: VirtualKeyboardSettings.locale
 
         keyboardNavigationActive: inputPanel.keyboard.navigationModeActive
 
@@ -236,7 +244,7 @@ InputPanelWindow {
             icon.name: root.width < 650 ? "view-fullscreen" : "view-restore"
             text: root.width < 650 ? i18n("Wide keyboard") : i18n("Compact keyboard")
             display: QQC2.AbstractButton.IconOnly
-            onClicked: root.width < 650 ? root.resizeKeyboard(800, 340) : root.resizeKeyboard(560, 260)
+            onClicked: root.width < 650 ? root.resizeKeyboard(800, 384) : root.resizeKeyboard(560, 304)
             QQC2.ToolTip.text: text
             QQC2.ToolTip.visible: hovered
         }
@@ -353,14 +361,72 @@ InputPanelWindow {
             }
         }
 
+        RowLayout {
+            id: suggestionBar
+            x: panelWrapper.sidePadding
+            y: panelWrapper.topPadding
+            width: parent.width - panelWrapper.sidePadding * 2
+            height: 44
+            spacing: 0
+
+            QQC2.ToolButton {
+                objectName: "keyboardLanguageButton"
+                text: VirtualKeyboardSettings.locale.slice(0, 2).toUpperCase()
+                font.pixelSize: 14
+                Layout.preferredWidth: 54
+                Layout.fillHeight: true
+                focusPolicy: Qt.NoFocus
+                enabled: VirtualKeyboardSettings.activeLocales.length > 1
+                Accessible.name: i18n("Switch keyboard language")
+                onClicked: inputPanel.switchLanguage()
+                QQC2.ToolTip.text: Qt.locale(VirtualKeyboardSettings.locale).nativeLanguageName
+                QQC2.ToolTip.visible: hovered
+            }
+
+            Repeater {
+                model: 3
+                delegate: QQC2.Button {
+                    required property int index
+                    property string pressedWord: ""
+                    objectName: "wordSuggestion" + index
+                    text: thing.suggestions[index] || ""
+                    font.pixelSize: Math.max(14, Math.min(18, root.width / 42))
+                    enabled: text.length > 0
+                    Layout.fillWidth: true
+                    Layout.preferredWidth: 1
+                    Layout.fillHeight: true
+                    focusPolicy: Qt.NoFocus
+                    flat: true
+                    onPressed: pressedWord = text
+                    onClicked: {
+                        if (thing.acceptSuggestion(pressedWord) && PlasmaKeyboardSettings.soundEnabled) {
+                            keyClick.play();
+                        }
+                    }
+                    background: Rectangle {
+                        color: parent.down ? Kirigami.Theme.highlightColor : "transparent"
+                        radius: Kirigami.Units.smallSpacing
+                        Rectangle {
+                            width: 1
+                            height: parent.height * 0.5
+                            anchors.verticalCenter: parent.verticalCenter
+                            color: Kirigami.Theme.disabledTextColor
+                            opacity: 0.25
+                        }
+                    }
+                }
+            }
+        }
+
         InputPanel {
             id: inputPanel
+            property bool localesInitialized: false
             readonly property real availableWidth: panelWrapper.width - panelWrapper.sidePadding * 2
-            readonly property real availableHeight: Math.max(1, panelWrapper.height - panelWrapper.topPadding - panelWrapper.bottomPadding)
+            readonly property real availableHeight: Math.max(1, panelWrapper.height - panelWrapper.topPadding - suggestionBar.height - panelWrapper.bottomPadding)
             readonly property real layoutAspect: Math.max(2.2, Math.min(4.2, availableWidth / availableHeight))
             width: Math.min(availableWidth, availableHeight * layoutAspect)
             x: (panelWrapper.width - width) / 2
-            y: panelWrapper.topPadding + (availableHeight - height) / 2
+            y: panelWrapper.topPadding + suggestionBar.height + (availableHeight - height) / 2
 
             Binding {
                 target: inputPanel.keyboard.style
@@ -372,20 +438,27 @@ InputPanelWindow {
             focusPolicy: Qt.NoFocus
             externalLanguageSwitchEnabled: true
             onExternalLanguageSwitch: (localeList, currentIndex) => {
-                languageDialog.show(inputPanel.keyboard.activeKey, localeList, currentIndex)
+                if (VirtualKeyboardSettings.activeLocales.length === 2) {
+                    switchLanguage();
+                } else {
+                    languageDialog.show(inputPanel.keyboard.activeKey, localeList, currentIndex);
+                }
+            }
+
+            function switchLanguage() {
+                const locales = VirtualKeyboardSettings.activeLocales;
+                const index = locales.indexOf(VirtualKeyboardSettings.locale);
+                VirtualKeyboardSettings.locale = locales[(index + 1) % locales.length];
             }
 
             function updateLocales() {
                 if (PlasmaKeyboardSettings.enabledLocales.length === 0) {
-                    // If there are no enabled locales, set it to the current locale
-                    // NOTE: If Qt.locale().name is not valid, then all keyboard layouts will be shown.
-                    let locale = Qt.locale().name;
-                    if (locale === "C") {
-                        locale = "en_US";
-                    }
-                    VirtualKeyboardSettings.activeLocales = [locale];
+                    VirtualKeyboardSettings.activeLocales = ["en_US", "sv_SE"];
                 } else {
                     VirtualKeyboardSettings.activeLocales = PlasmaKeyboardSettings.enabledLocales;
+                }
+                if (VirtualKeyboardSettings.activeLocales.indexOf(VirtualKeyboardSettings.locale) < 0) {
+                    VirtualKeyboardSettings.locale = VirtualKeyboardSettings.activeLocales[0];
                 }
             }
 
@@ -393,6 +466,11 @@ InputPanelWindow {
                 target: VirtualKeyboardSettings
                 function onAvailableLocalesChanged() {
                     inputPanel.updateLocales();
+                }
+                function onLocaleChanged() {
+                    if (inputPanel.localesInitialized) {
+                        floatingKeyboardState.keyboardLocale = VirtualKeyboardSettings.locale;
+                    }
                 }
             }
 
@@ -405,7 +483,11 @@ InputPanelWindow {
 
             Component.onCompleted: {
                 VirtualKeyboardSettings.styleName = "Breeze";
+                const savedLocale = floatingKeyboardState.keyboardLocale;
                 inputPanel.updateLocales();
+                const locales = VirtualKeyboardSettings.activeLocales;
+                VirtualKeyboardSettings.locale = locales.indexOf(savedLocale) >= 0 ? savedLocale : locales[0];
+                localesInitialized = true;
             }
         }
     }

@@ -14,6 +14,9 @@ ecm_add_qtwayland_client_protocol(plasma-keyboard PROTOCOL "${Wayland_DATADIR}/w
 
 target_sources(plasma-keyboard PRIVATE
     main.cpp
+    wordsuggestions.cpp
+    wordsuggestions.h
+    suggestions/words.qrc
     inputpanelintegration.cpp
     inputpanelintegration.h
     inputpanelrole.h

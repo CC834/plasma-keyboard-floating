@@ -9,3 +9,7 @@ this GPLv3-only material. The complete GPLv3 text is in LICENSES/GPL-3.0-only.tx
 
 All inherited copyright and license notices remain in place. New packaging files
 carry their own SPDX notices. No license is granted to third-party trademarks.
+
+The English and Swedish completion data in src/suggestions/ are adapted from
+wordfreq 3.1.1 by Robyn Speer and contributors, under CC-BY-SA-4.0. See
+src/suggestions/NOTICE.md and LICENSES/CC-BY-SA-4.0.txt.

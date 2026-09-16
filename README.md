@@ -3,11 +3,13 @@
 
 # Floating Plasma Keyboard
 
-A small, movable touch keyboard for **KDE Plasma on Wayland** (Tested on version 44). Drag it where you need it, resize it with your finger, and keep typing into your app.
+A small, movable touch keyboard for **KDE Plasma on Wayland** (tested on Fedora 44), with offline word suggestions and **English / Swedish** layouts. Drag it where you need it, resize it with your finger, and tap a suggestion to complete your word.
 
-![Floating Plasma Keyboard showing its drag handle, size preset, sound toggle, hide button, and touch resize grip](docs/images/floating-keyboard.png)
+![English keyboard with the word-completion bar](docs/images/suggestions-english.png)
 
-*Actual keyboard screenshot. Italian QWERTY layout shown; available languages depend on your Qt Virtual Keyboard installation.*
+![Swedish keyboard with word suggestions and å, ä, ö keys](docs/images/suggestions-swedish.png)
+
+*Actual screenshots of the English and Swedish layouts.*
 
 A community modification of [KDE Plasma Keyboard](https://invent.kde.org/plasma/plasma-keyboard), based on **v6.7.4**. This is an experimental fork, not an official KDE release.
 
@@ -18,6 +20,8 @@ A community modification of [KDE Plasma Keyboard](https://invent.kde.org/plasma/
 - Resizes from its edges and corners; keys adapt to the new shape.
 - Remembers its size and offers compact/wide presets.
 - Types without taking focus away from the text field.
+- Suggests up to three common completions as you type, using 40,000 bundled words per language.
+- Switches between English and Swedish with the **EN/SV** button or globe key.
 - Provides soft key-click sounds and a speaker button to mute them.
 - Hides with the down arrow and includes a launcher to show it manually.
 - Stays available across virtual desktops with the included KWin rule.
@@ -50,7 +54,7 @@ cmake -S . -B build -G Ninja \
   -DBUILD_TESTING=ON \
   -DPLASMA_KEYBOARD_SOUNDS_ENABLED=ON \
   -DPLASMA_KEYBOARD_VIBRATION_ENABLED=OFF
-cmake --build build --target plasma-keyboard mockinputmethodcompositor
+cmake --build build --target plasma-keyboard mockinputmethodcompositor wordsuggestionstest
 ```
 
 Use development packages matching your installed Qt libraries: this project uses Qt private APIs. Vibration is disabled in this configuration because it requires an additional feedback service.
@@ -83,6 +87,18 @@ Log out and back in to load the audio rule. It gives this keyboard its own remem
 
 If you previously muted the keyboard itself in Plasma's volume controls, unmute it there too.
 
+## Word suggestions and languages
+
+Type the beginning of a word, then tap a suggestion above the keys. The keyboard appends the missing letters and a space. For example, `hel` → **help** in English or `smö` → **smör** in Swedish. Existing text is not deleted or automatically corrected.
+
+Use **EN/SV** or the globe key to switch layouts; your choice is remembered. English (`en_US`) and Swedish (`sv_SE`) are enabled by default when no custom language list is configured. Existing custom language preferences are respected. To explicitly enable both:
+
+```sh
+kwriteconfig6 --file plasmakeyboardrc --group General --key enabledLocales en_US,sv_SE --notify
+```
+
+Completions are ranked by general word frequency and run entirely offline. No typing history is saved or uploaded. These are word completions, not Apple's language model, context-aware next-word prediction, or automatic spelling correction. Suggestions clear when you move inside an existing word or select text, and are disabled for password/sensitive fields and non-prose fields such as URLs, numbers, and terminals.
+
 ## Using it
 
 | Control | Action |
@@ -91,6 +107,8 @@ If you previously muted the keyboard itself in Plasma's volume controls, unmute 
 | Outer edges and corners | Resize |
 | Bottom-right grip | Resize with touch or mouse |
 | Size button | Switch between compact and wide |
+| EN/SV or globe | Switch English / Swedish |
+| Suggestion bar | Complete the current word |
 | Speaker button | Enable or mute key clicks |
 | Down arrow | Hide |
 | Show Floating Keyboard launcher | Open manually in the current app |
@@ -107,13 +125,14 @@ If you previously muted the keyboard itself in Plasma's volume controls, unmute 
 
 ```sh
 QT_QPA_PLATFORM=offscreen dbus-run-session -- build/bin/mockinputmethodcompositor
+build/bin/wordsuggestionstest
 ```
 
 The mock Wayland compositor checks typing without compositor keyboard focus, touch/mouse resizing, moving, hiding/showing, size presets, and accent composition.
 
 The optional audio test is skipped by default. It requires an **isolated output sink**, the test keyboard routed to that sink, and `FLOATING_KEYBOARD_AUDIO_MONITOR` set to that sink's monitor. Never point it at a microphone. Setting `PULSE_SINK` alone is insufficient on some Qt backends.
 
-During local validation, the full suite passed **9 checks**, including captured PCM audio from mouse/touch key taps and silence when muted. Those are local test results, not a promise of compatibility with every Plasma setup.
+During local validation, the compositor suite passed **10 checks** and the word-suggestion unit suite passed **6 checks**, including English completion clicks, Swedish touch completions and å/ä/ö keys, cursor/selection/password handling, and captured PCM audio from key taps with silence when muted. Those are local test results, not a promise of compatibility with every Plasma setup.
 
 ## Return to the stock keyboard
 
@@ -131,5 +150,7 @@ If installed, remove `~/.config/wireplumber/wireplumber.conf.d/80-floating-keybo
 ## Credits and licensing
 
 Based on KDE Plasma Keyboard by its [upstream contributors](https://invent.kde.org/plasma/plasma-keyboard). The Qt Virtual Keyboard layouts and inherited files retain their original attribution and license notices. The bundled click is credited to **Canonical Ltd. (2013)** and is **GPL-3.0-only**.
+
+The ranked English/Swedish word lists are adapted from **wordfreq 3.1.1** by Robyn Speer and contributors, under **CC-BY-SA-4.0**. See the [data attribution and source notices](src/suggestions/NOTICE.md). Python and wordfreq are only needed to regenerate the lists, not to build or run the keyboard.
 
 See [`LICENSE`](LICENSE), [`LICENSES/`](LICENSES/), and each file's SPDX notices. The sound-enabled configuration includes GPLv3-only material. This repository preserves the upstream license files and attribution; it is not affiliated with Microsoft or Apple.

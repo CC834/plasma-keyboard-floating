@@ -1,0 +1,8 @@
+<!-- SPDX-FileCopyrightText: 2026 CC834 -->
+<!-- SPDX-License-Identifier: GPL-3.0-only -->
+<RCC>
+    <qresource prefix="/suggestions">
+        <file>en.txt</file>
+        <file>sv.txt</file>
+    </qresource>
+</RCC>

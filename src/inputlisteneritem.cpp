@@ -10,6 +10,7 @@
 #include "inputmethod_p.h"
 #include "logging.h"
 #include "plasmakeyboardsettings.h"
+#include "wordsuggestions.h"
 
 #include "overlay/longpresstrigger.h"
 #include "overlay/overlaycontroller.h"
@@ -74,6 +75,9 @@ InputListenerItem::InputListenerItem()
 
     // Grab and listen to physical keyboard input
     m_input.setGrabbing(true);
+    connect(&m_input, &InputPlugin::contextChanged, this, &InputListenerItem::syncSuggestionPrefix);
+    connect(&m_input, &InputPlugin::surroundingTextChanged, this, &InputListenerItem::syncSuggestionPrefix);
+    connect(&m_input, &InputPlugin::contentTypeChanged, this, &InputListenerItem::syncSuggestionPrefix);
 
     // Register overlay triggers
     m_overlayController->registerTrigger(new LongPressTrigger(m_overlayController));
@@ -343,9 +347,8 @@ QVariant InputListenerItem::inputMethodQuery(Qt::InputMethodQuery query) const
         const auto imHints = m_input.contentHint();
         Qt::InputMethodHints qtHints;
 
-        // Disable Qt VirtualKeyboard's hunspell plugin
-        // It deals poorly with current external cursor position change
-        // logic, and causes problems when selecting text with a mouse.
+        // Use our suffix-only completion bar instead of Hunspell's preedit
+        // replacement, which interferes with external selection/cursor changes.
         qtHints |= Qt::ImhNoPredictiveText;
 
         // if (imHints & InputPlugin::content_hint_default) { }
@@ -465,6 +468,14 @@ QVariant InputListenerItem::inputMethodQuery(Qt::InputMethodQuery query) const
 
 void InputListenerItem::keyPressEvent(QKeyEvent *event)
 {
+    if (event->key() == Qt::Key_Backspace && m_atWordBoundary) {
+        m_suggestionPrefix.chop(1);
+        refreshSuggestions();
+    } else if (event->text().isEmpty() || event->key() == Qt::Key_Return) {
+        m_suggestionPrefix.clear();
+        m_atWordBoundary = false;
+        refreshSuggestions();
+    }
     if (IGNORED_KEYS->find(event->key()) != IGNORED_KEYS->end()) {
         return;
     }
@@ -492,6 +503,7 @@ void InputListenerItem::keyReleaseEvent(QKeyEvent *event)
         } else {
             // If we have text coming as a key event, use it to commit the string
             m_input.commit(event->text());
+            trackCommittedText(event->text());
         }
     }
 }
@@ -530,6 +542,10 @@ void InputListenerItem::inputMethodEvent(QInputMethodEvent *event)
     // Commit string if there is something to commit, or we did a replacement
     if (needsReplacement || !commit.isEmpty()) {
         m_input.commit(commit);
+        if (needsReplacement) {
+            m_suggestionPrefix.clear();
+        }
+        trackCommittedText(commit);
     }
 
     // Set attributes for style (ex. needed for CJK)
@@ -560,6 +576,65 @@ void InputListenerItem::inputMethodEvent(QInputMethodEvent *event)
 
     // Send currently being edited string
     m_input.setPreEditString(preedit);
+}
+
+bool InputListenerItem::suggestionsAllowed() const
+{
+    if (!m_input.hasContext() || (m_input.contentHint() & (InputPlugin::content_hint_hidden_text | InputPlugin::content_hint_sensitive_data))) {
+        return false;
+    }
+    const auto purpose = m_input.contentPurpose();
+    return purpose == InputPlugin::content_purpose_normal || purpose == InputPlugin::content_purpose_alpha || purpose == InputPlugin::content_purpose_name;
+}
+
+void InputListenerItem::syncSuggestionPrefix()
+{
+    const QByteArray text = m_input.surroundingText().toUtf8();
+    const int cursor = QString::fromUtf8(text.first(qMin(qsizetype(m_input.cursorPos()), text.size()))).size();
+    const int anchor = QString::fromUtf8(text.first(qMin(qsizetype(m_input.anchorPos()), text.size()))).size();
+    const QString unicode = QString::fromUtf8(text);
+    m_atWordBoundary = suggestionsAllowed() && cursor == anchor && (cursor == unicode.size() || !WordSuggestions::isWordCharacter(unicode.at(cursor)));
+    m_suggestionPrefix = m_atWordBoundary ? WordSuggestions::prefix(unicode, cursor, anchor) : QString();
+    refreshSuggestions();
+}
+
+void InputListenerItem::trackCommittedText(const QString &text)
+{
+    if (m_atWordBoundary && suggestionsAllowed()) {
+        const QString combined = m_suggestionPrefix + text;
+        m_suggestionPrefix = WordSuggestions::prefix(combined, combined.size(), combined.size());
+    }
+    refreshSuggestions();
+}
+
+void InputListenerItem::refreshSuggestions()
+{
+    const QStringList words = suggestionsAllowed() && m_atWordBoundary ? WordSuggestions::complete(m_suggestionPrefix, m_suggestionLocale) : QStringList();
+    if (words != m_suggestions) {
+        m_suggestions = words;
+        Q_EMIT suggestionsChanged();
+    }
+}
+
+void InputListenerItem::setSuggestionLocale(const QString &locale)
+{
+    if (locale != m_suggestionLocale) {
+        m_suggestionLocale = locale;
+        refreshSuggestions();
+        Q_EMIT suggestionLocaleChanged();
+    }
+}
+
+bool InputListenerItem::acceptSuggestion(const QString &word)
+{
+    if (!suggestionsAllowed() || !m_atWordBoundary || m_suggestionPrefix.isEmpty() || !m_suggestions.contains(word)) {
+        return false;
+    }
+    // Append only the missing suffix. Never delete or rewrite surrounding text.
+    const QString suffix = word.mid(m_suggestionPrefix.size()) + QLatin1Char(' ');
+    m_input.commit(suffix);
+    trackCommittedText(suffix);
+    return true;
 }
 
 #include "moc_inputlisteneritem.cpp"

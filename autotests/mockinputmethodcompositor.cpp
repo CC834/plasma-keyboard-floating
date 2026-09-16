@@ -204,6 +204,7 @@ Q_SIGNALS:
     void keyboardGrabbed();
     void commitStringChanged(const QString &commitString);
     void keysymReceived(uint32_t sym, uint32_t state);
+    void surroundingDeleted(int index, uint length);
 
 protected:
     void zwp_input_method_context_v1_destroy(Resource *resource) override
@@ -228,6 +229,7 @@ protected:
     {
         Q_UNUSED(resource);
         qInfo() << "delete_surrounding_text" << index << length;
+        Q_EMIT surroundingDeleted(index, length);
     }
 
     void zwp_input_method_context_v1_keysym(Resource *resource, uint32_t serial, uint32_t time, uint32_t sym, uint32_t state, uint32_t modifiers) override
@@ -648,7 +650,7 @@ private Q_SLOTS:
         qInfo() << "Floating keyboard size" << initialSize;
         QSignalSpy commitSpy(m_inputMethod->context(), &InputMethodContext::commitStringChanged);
         // Top letter row, first key (q), below the drag handle.
-        click(QPointF(initialSize.width() * 0.065, initialSize.height() * 0.25));
+        click(QPointF(initialSize.width() * 0.065, 80 + (initialSize.height() - 116) * 0.125));
         QTRY_COMPARE(commitSpy.count(), 1);
         QCOMPARE(commitSpy.first().first().toString(), QStringLiteral("q"));
         qInfo() << "Pointer typed" << commitSpy.first().first();
@@ -729,7 +731,7 @@ private Q_SLOTS:
         QTest::qWait(200);
         const QSize reopened = m_surface->destinationSize();
         QSignalSpy touchCommitSpy(m_inputMethod->context(), &InputMethodContext::commitStringChanged);
-        QPointF qKey(reopened.width() * 0.065, reopened.height() * 0.25);
+        QPointF qKey(reopened.width() * 0.065, 80 + (reopened.height() - 116) * 0.125);
         seat->sendTouchPointPressed(m_surface, 0, qKey);
         seat->sendTouchFrameEvent(m_surface->client());
         wl_display_flush_clients(m_compositor->display());
@@ -741,7 +743,7 @@ private Q_SLOTS:
         QCOMPARE(touchCommitSpy.first().first().toString(), QStringLiteral("q"));
 
         // The original bottom-row hide key uses Qt's input-method API.
-        click(QPointF(reopened.width() * 0.79, reopened.height() * 0.79));
+        click(QPointF(reopened.width() * 0.79, 80 + (reopened.height() - 116) * 0.875));
         QTRY_VERIFY(!m_surface || !m_surface->hasContent());
         m_inputMethod->sendDeactivate();
         wl_display_flush_clients(m_compositor->display());
@@ -785,13 +787,13 @@ private Q_SLOTS:
 
         // The size preset is reversible and the new shape is persisted.
         click(QPointF(620 - 90, 18));
-        QTRY_COMPARE(m_surface->destinationSize(), QSize(800, 340));
+        QTRY_COMPARE(m_surface->destinationSize(), QSize(800, 384));
         click(QPointF(800 - 90, 18));
-        QTRY_COMPARE(m_surface->destinationSize(), QSize(560, 260));
+        QTRY_COMPARE(m_surface->destinationSize(), QSize(560, 304));
         QTest::qWait(400);
         QSettings settings(QStringLiteral("kde.org"), QStringLiteral("plasma-keyboard"));
         QTRY_COMPARE_WITH_TIMEOUT(([&settings] { settings.sync(); return settings.value(QStringLiteral("FloatingKeyboard/keyboardWidth")).toInt(); })(), 560, 3000);
-        QCOMPARE(settings.value(QStringLiteral("FloatingKeyboard/keyboardHeight")).toInt(), 260);
+        QCOMPARE(settings.value(QStringLiteral("FloatingKeyboard/keyboardHeight")).toInt(), 304);
 
         click(QPointF(560 - 54, 18));
         QTest::qWait(100);
@@ -810,7 +812,7 @@ private Q_SLOTS:
         keyboard.asyncCall(QStringLiteral("showKeyboard"));
         QTRY_VERIFY(m_surface && m_surface->hasContent());
         QSignalSpy commits(m_inputMethod->context(), &InputMethodContext::commitStringChanged);
-        click(QPointF(560 * 0.065, 260 * 0.25));
+        click(QPointF(560 * 0.065, 80 + (304 - 116) * 0.125));
         QTRY_COMPARE(commits.count(), 1);
         QCOMPARE(commits.first().first().toString(), QStringLiteral("q"));
         QVERIFY(!seat->keyboardFocus());
@@ -846,7 +848,7 @@ private Q_SLOTS:
         QTest::qWait(1200);
         QVERIFY(capture.bytesAvailable() > 0);
         capture.readAllStandardOutput();
-        const QPointF qKey(size.width() * 0.065, size.height() * 0.25);
+        const QPointF qKey(size.width() * 0.065, 80 + (size.height() - 116) * 0.125);
         const QPointF speaker(size.width() - 54, 18);
         QSignalSpy commits(m_inputMethod->context(), &InputMethodContext::commitStringChanged);
         for (int i = 0; i < 3; ++i) {
@@ -909,7 +911,7 @@ private Q_SLOTS:
         const QSize size = m_surface->destinationSize();
         auto *seat = m_compositor->defaultSeat();
         QSignalSpy commits(m_inputMethod->context(), &InputMethodContext::commitStringChanged);
-        seat->sendMouseMoveEvent(m_view.get(), QPointF(size.width() * 0.065, size.height() * 0.25));
+        seat->sendMouseMoveEvent(m_view.get(), QPointF(size.width() * 0.065, 80 + (size.height() - 116) * 0.125));
         wl_display_flush_clients(m_compositor->display());
         QTest::qWait(40);
         seat->sendMousePressEvent(Qt::LeftButton);
@@ -1005,6 +1007,114 @@ private Q_SLOTS:
 
         // Set the keymap back to the default to avoid affecting other tests.
         setKeymap("us", nullptr);
+    }
+
+    void testWordSuggestionsAndSwedishLayout()
+    {
+        KConfig config(QStringLiteral("plasmakeyboardrc"));
+        KConfigGroup general(&config, QStringLiteral("General"));
+        general.writeEntry(QStringLiteral("enabledLocales"), QStringList{QStringLiteral("en_US"), QStringLiteral("sv_SE")}, KConfig::Notify);
+        config.sync();
+        QTest::qWait(500);
+        m_toplevel->sendConfigure(QSize(800, 384), QList<QWaylandXdgToplevel::State>{});
+        wl_display_flush_clients(m_compositor->display());
+        QTRY_COMPARE(m_surface->destinationSize(), QSize(800, 384));
+        QTest::qWait(200);
+        auto *seat = m_compositor->defaultSeat();
+        auto *context = m_inputMethod->context();
+        auto click = [this, seat](QPointF point) {
+            seat->sendMouseMoveEvent(m_view.get(), point, point);
+            wl_display_flush_clients(m_compositor->display());
+            QTest::qWait(40);
+            seat->sendMousePressEvent(Qt::LeftButton);
+            wl_display_flush_clients(m_compositor->display());
+            QTest::qWait(40);
+            seat->sendMouseReleaseEvent(Qt::LeftButton);
+            wl_display_flush_clients(m_compositor->display());
+            QTest::qWait(150);
+        };
+        auto surrounding = [this, context](const QString &text, int cursor, int anchor) {
+            for (auto *resource : context->resourceMap()) {
+                context->send_surrounding_text(resource->handle, text, cursor, anchor);
+            }
+            wl_display_flush_clients(m_compositor->display());
+            QTest::qWait(180);
+        };
+        auto saveImage = [this](const QString &name) {
+            if (qEnvironmentVariableIsSet("FLOATING_KEYBOARD_SUGGESTION_IMAGES")) {
+                QWaylandSurfaceGrabber grabber(m_surface);
+                QSignalSpy grabbed(&grabber, &QWaylandSurfaceGrabber::success);
+                grabber.grab();
+                QTRY_COMPARE(grabbed.count(), 1);
+                QVERIFY(
+                    qvariant_cast<QImage>(grabbed.first().first()).save(qEnvironmentVariable("FLOATING_KEYBOARD_SUGGESTION_IMAGES") + QLatin1Char('/') + name));
+            }
+        };
+        surrounding(QString(), 0, 0);
+        QSignalSpy commits(context, &InputMethodContext::commitStringChanged);
+        QSignalSpy deletions(context, &InputMethodContext::surroundingDeleted);
+        // Actually type "hel" through the focusless keyboard, without waiting
+        // for application echoes, then tap its highest-frequency completion.
+        click(QPointF(0.55 * 800, 80 + 268 * 0.375)); // h
+        click(QPointF(0.25 * 800, 80 + 268 * 0.125)); // e
+        click(QPointF(0.85 * 800, 80 + 268 * 0.375)); // l
+        QTRY_COMPARE(commits.count(), 3);
+        QCOMPARE(commits[0][0].toString() + commits[1][0].toString() + commits[2][0].toString(), QStringLiteral("hel"));
+        saveImage(QStringLiteral("suggestions-english.png"));
+        click(QPointF(184, 58));
+        QTRY_COMPARE(commits.count(), 4);
+        QCOMPARE(commits.last().first().toString(), QStringLiteral("p "));
+        QCOMPARE(deletions.count(), 0);
+
+        // Moving into a word or selecting text must disable suffix completion.
+        surrounding(QStringLiteral("helpful"), 3, 3);
+        click(QPointF(184, 58));
+        QCOMPARE(commits.count(), 4);
+        surrounding(QStringLiteral("hel"), 3, 0);
+        click(QPointF(184, 58));
+        QCOMPARE(commits.count(), 4);
+        for (auto *resource : context->resourceMap()) {
+            context->send_content_type(resource->handle, 0xc0, 8); // password
+        }
+        surrounding(QStringLiteral("hel"), 3, 3);
+        click(QPointF(184, 58));
+        QCOMPARE(commits.count(), 4);
+        for (auto *resource : context->resourceMap()) {
+            context->send_content_type(resource->handle, 0, 0);
+        }
+        surrounding(QString(), 0, 0);
+
+        // Switch layout without changing compositor focus; then type å, ä, ö.
+        click(QPointF(35, 58));
+        QSettings settings(QStringLiteral("kde.org"), QStringLiteral("plasma-keyboard"));
+        QTRY_COMPARE_WITH_TIMEOUT(([&settings] {
+                                      settings.sync();
+                                      return settings.value(QStringLiteral("FloatingKeyboard/keyboardLocale")).toString();
+                                  })(),
+                                  QStringLiteral("sv_SE"),
+                                  3000);
+        click(QPointF(0.95 * 800, 80 + 268 * 0.125));
+        click(QPointF(0.95 * 800, 80 + 268 * 0.375));
+        click(QPointF(0.866 * 800, 80 + 268 * 0.375));
+        QTRY_COMPARE(commits.count(), 7);
+        QCOMPARE(commits[4][0].toString() + commits[5][0].toString() + commits[6][0].toString(), QStringLiteral("åäö"));
+        const QString swedish = QStringLiteral("Jag äter smö");
+        surrounding(swedish, swedish.toUtf8().size(), swedish.toUtf8().size());
+        saveImage(QStringLiteral("suggestions-swedish.png"));
+        // Accept a Swedish completion by touch, preserving the existing UTF-8 text.
+        const QPointF suggestion(184, 58);
+        seat->sendTouchPointPressed(m_surface, 0, suggestion);
+        seat->sendTouchFrameEvent(m_surface->client());
+        wl_display_flush_clients(m_compositor->display());
+        QTest::qWait(80);
+        seat->sendTouchPointReleased(m_surface, 0, suggestion);
+        seat->sendTouchFrameEvent(m_surface->client());
+        wl_display_flush_clients(m_compositor->display());
+        QTRY_COMPARE(commits.count(), 8);
+        QCOMPARE(commits.last().first().toString(), QStringLiteral("r "));
+        QCOMPARE(deletions.count(), 0);
+        QVERIFY(!seat->keyboardFocus());
+        QVERIFY(!m_toplevel->activated());
     }
 
     void cleanupTestCase()

@@ -3,6 +3,8 @@
 
 find_package(Qt6 ${QT_MIN_VERSION} REQUIRED COMPONENTS Test WaylandCompositor)
 include(ECMAddTests)
+ecm_add_test(wordsuggestionstest.cpp ../src/wordsuggestions.cpp ../src/suggestions/words.qrc
+    TEST_NAME wordsuggestionstest LINK_LIBRARIES Qt::Core Qt::Test)
 
 file(GENERATE
     OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/mockinputmethodcompositor_config.h
