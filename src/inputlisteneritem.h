@@ -10,6 +10,7 @@
 
 #include <QQuickItem>
 #include <QQuickWindow>
+#include <QTimer>
 #include <QVirtualKeyboardInputEngine>
 #include <qqmlintegration.h>
 
@@ -23,6 +24,7 @@ class InputListenerItem : public QQuickItem
 {
     Q_OBJECT
     QML_ELEMENT
+    Q_CLASSINFO("D-Bus Interface", "org.kde.plasma.keyboard.Floating")
 
     Q_PROPERTY(QVirtualKeyboardInputEngine *engine WRITE setEngine)
     Q_PROPERTY(bool keyboardNavigationActive MEMBER m_keyboardNavigationActive)
@@ -36,6 +38,9 @@ class InputListenerItem : public QQuickItem
 
 public:
     InputListenerItem();
+
+    Q_SCRIPTABLE Q_INVOKABLE void showKeyboard();
+    Q_SCRIPTABLE Q_INVOKABLE void hideKeyboard();
 
     void setEngine(QVirtualKeyboardInputEngine *engine);
 
@@ -55,7 +60,12 @@ Q_SIGNALS:
     void keyNavigationReleased(int key);
 
 private:
+    void activateInputFocus();
+
     InputPlugin m_input;
     OverlayController *m_overlayController = nullptr;
+    QTimer m_hideTimer;
     bool m_keyboardNavigationActive = false;
+    bool m_userDismissed = false;
+    bool m_manualShowRequested = false;
 };

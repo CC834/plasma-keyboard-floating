@@ -13,6 +13,7 @@ ecm_add_test(mockinputmethodcompositor.cpp LINK_LIBRARIES
     KF6::ConfigCore
     PkgConfig::XKBCommon
     Qt::Core
+    Qt::DBus
     Qt::Gui
     Qt::GuiPrivate
     Qt::Test

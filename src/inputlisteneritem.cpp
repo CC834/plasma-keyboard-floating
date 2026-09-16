@@ -16,6 +16,8 @@
 #include "overlay/prefixquerytrigger.h"
 #include "overlay/textexpansiontrigger.h"
 
+#include <QDBusInterface>
+#include <QDBusReply>
 #include <QLoggingCategory>
 #include <QTextFormat>
 
@@ -46,10 +48,30 @@ Q_GLOBAL_STATIC_WITH_ARGS(const QList<Qt::Key>, KEYBOARD_NAVIGATION_CAPTURE_KEYS
 // Keys to capture when keyboard navigation is active
 Q_GLOBAL_STATIC_WITH_ARGS(const QList<Qt::Key>, KEYBOARD_NAVIGATION_ACTIVE_CAPTURE_KEYS, (initCapture() + QList<Qt::Key>{Qt::Key_Return}));
 
+namespace
+{
+bool kwinWantsKeyboardForCurrentActivation()
+{
+    QDBusInterface virtualKeyboard(QStringLiteral("org.kde.KWin"),
+                                   QStringLiteral("/VirtualKeyboard"),
+                                   QStringLiteral("org.kde.kwin.VirtualKeyboard"),
+                                   QDBusConnection::sessionBus());
+    const QDBusReply<bool> reply = virtualKeyboard.call(QDBus::Block, QStringLiteral("willShowOnActive"));
+
+    // Showing is the safer fallback on compositors without KWin's helper API.
+    return !reply.isValid() || reply.value();
+}
+}
+
 InputListenerItem::InputListenerItem()
     : m_input(&(*s_im))
     , m_overlayController(new OverlayController(&m_input, this))
 {
+    auto bus = QDBusConnection::sessionBus();
+    if (bus.registerService(QStringLiteral("org.kde.plasma.keyboard.Floating"))) {
+        bus.registerObject(QStringLiteral("/Keyboard"), this, QDBusConnection::ExportScriptableInvokables);
+    }
+
     // Grab and listen to physical keyboard input
     m_input.setGrabbing(true);
 
@@ -57,6 +79,32 @@ InputListenerItem::InputListenerItem()
     m_overlayController->registerTrigger(new LongPressTrigger(m_overlayController));
     m_overlayController->registerTrigger(new PrefixQueryTrigger(m_overlayController));
     m_overlayController->registerTrigger(new TextExpansionTrigger(m_overlayController));
+
+    connect(m_overlayController, &OverlayController::overlayVisibleChanged, this, [this] {
+        if (!m_overlayController->overlayVisible() && window() && window()->isVisible()) {
+            // The overlay shell takes Qt's local focus while candidates are open.
+            // Restore it after the overlay has unmapped, without activating KWin.
+            QTimer::singleShot(0, this, [this] {
+                if (window()->isVisible() && m_input.hasContext()) {
+                    activateInputFocus();
+                    QGuiApplication::inputMethod()->show();
+                }
+            });
+        }
+    });
+
+    // Text-input contexts can briefly disappear while focus moves between two
+    // fields. Avoid unmapping and remapping the Wayland window for that short
+    // hand-off, which otherwise looks like visible flicker.
+    m_hideTimer.setSingleShot(true);
+    m_hideTimer.setInterval(180);
+    connect(&m_hideTimer, &QTimer::timeout, this, [this] {
+        if (!m_input.hasContext()) {
+            m_manualShowRequested = false;
+            window()->setVisible(false);
+            QGuiApplication::inputMethod()->setVisible(false);
+        }
+    });
 
     connect(&m_input, &InputPlugin::contextChanged, this, [this] {
         const bool hasContext = m_input.hasContext();
@@ -67,10 +115,20 @@ InputListenerItem::InputListenerItem()
         }
 
         if (hasContext) {
+            m_userDismissed = false;
+            m_hideTimer.stop();
+            activateInputFocus();
             QGuiApplication::inputMethod()->update(Qt::ImQueryAll);
-            QGuiApplication::inputMethod()->show();
+
+            // In KWin's automatic mode, a mouse-focused field deliberately
+            // does not summon the keyboard. Honor that decision even though
+            // this floating xdg-shell window is not a compositor input panel.
+            if (window()->isVisible() || m_manualShowRequested || kwinWantsKeyboardForCurrentActivation()) {
+                window()->setVisible(true);
+                QGuiApplication::inputMethod()->show();
+            }
         } else {
-            QGuiApplication::inputMethod()->setVisible(false);
+            m_hideTimer.start();
         }
     });
     connect(&m_input, &InputPlugin::surroundingTextChanged, this, [this] {
@@ -84,11 +142,14 @@ InputListenerItem::InputListenerItem()
         }
 
         if (m_input.hasContext()) {
-            // Re-activate when text input activates, and there is context
-            if (!window()->isVisible()) {
-                QGuiApplication::inputMethod()->setVisible(true);
+            // A field can first gain focus from a mouse, then be tapped without
+            // creating a new input context. Honor the updated touch policy, but
+            // don't undo an explicit dismissal on a surrounding-text echo.
+            if (!window()->isVisible() && !m_userDismissed && kwinWantsKeyboardForCurrentActivation()) {
+                activateInputFocus();
+                window()->show();
+                QGuiApplication::inputMethod()->show();
             }
-
             // Update vkbd input method only if the virtual keyboard panel is shown
             if (window()->isExposed()) {
                 QGuiApplication::inputMethod()->update(Qt::ImSurroundingText);
@@ -96,14 +157,32 @@ InputListenerItem::InputListenerItem()
         }
     });
     connect(&m_input, &InputPlugin::deactivate, this, [this] {
-        QGuiApplication::inputMethod()->setVisible(false);
+        m_hideTimer.start();
         QGuiApplication::inputMethod()->reset();
     });
     connect(&m_input, &InputPlugin::resetRequested, this, [] {
         QGuiApplication::inputMethod()->reset();
     });
     connect(QGuiApplication::inputMethod(), &QInputMethod::visibleChanged, this, [this] {
-        window()->setVisible(QGuiApplication::inputMethod()->isVisible());
+        if (QGuiApplication::inputMethod()->isVisible()) {
+            if (m_input.hasContext() && (m_manualShowRequested || kwinWantsKeyboardForCurrentActivation())) {
+                m_hideTimer.stop();
+                window()->setVisible(true);
+            }
+        } else if (m_input.hasContext()) {
+            // Qt also hides its input method when an accent/emoji window takes
+            // local focus. That is not a user dismissal of the floating keyboard.
+            if (m_overlayController->overlayVisible() || QGuiApplication::focusWindow() != window()) {
+                return;
+            }
+            // The keyboard's close key hides it without deactivating the text
+            // field, so this path must remain immediate.
+            m_userDismissed = true;
+            m_manualShowRequested = false;
+            window()->setVisible(false);
+        } else {
+            m_hideTimer.start();
+        }
     });
 
     connect(&m_input, &InputPlugin::keyPressed, this, [this](QKeyEvent *keyEvent) {
@@ -179,7 +258,61 @@ InputListenerItem::InputListenerItem()
     //
     // TODO: Investigate other places this might happen and how to fix it.
 
+    connect(this, &QQuickItem::windowChanged, this, [this](QQuickWindow *quickWindow) {
+        if (!quickWindow) {
+            return;
+        }
+        connect(quickWindow, &QWindow::visibleChanged, this, [this](bool visible) {
+            if (visible) {
+                // Run after mapping, when Qt has processed the xdg configure.
+                QTimer::singleShot(0, this, &InputListenerItem::activateInputFocus);
+            }
+        });
+    });
+
     QGuiApplication::inputMethod()->update(Qt::ImQueryAll);
+}
+
+void InputListenerItem::activateInputFocus()
+{
+    if (!window()) {
+        return;
+    }
+    // Qt Virtual Keyboard dispatches to QGuiApplication::focusObject(). The
+    // input-panel shell used to establish this local focus in applyConfigure().
+    // An xdg tool window never gets compositor keyboard focus, deliberately.
+    // Restore only Qt's in-process focus; do not request Wayland activation.
+    forceActiveFocus();
+    QWindowSystemInterface::handleFocusWindowChanged(window());
+    QWindowSystemInterface::flushWindowSystemEvents();
+}
+
+void InputListenerItem::showKeyboard()
+{
+    m_userDismissed = false;
+    m_manualShowRequested = true;
+    m_hideTimer.stop();
+    // KWin can fall back to key events when the focused application does not
+    // implement Wayland text-input (including existing XWayland applications).
+    QDBusInterface virtualKeyboard(QStringLiteral("org.kde.KWin"), QStringLiteral("/VirtualKeyboard"),
+                                   QStringLiteral("org.kde.kwin.VirtualKeyboard"), QDBusConnection::sessionBus());
+    virtualKeyboard.asyncCall(QStringLiteral("forceActivate"));
+    if (m_input.hasContext()) {
+        activateInputFocus();
+        window()->show();
+        QGuiApplication::inputMethod()->show();
+    }
+}
+
+void InputListenerItem::hideKeyboard()
+{
+    m_userDismissed = true;
+    m_manualShowRequested = false;
+    m_hideTimer.stop();
+    QGuiApplication::inputMethod()->hide();
+    if (window()) {
+        window()->hide();
+    }
 }
 
 OverlayController *InputListenerItem::overlayController() const

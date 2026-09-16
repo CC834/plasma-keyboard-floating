@@ -29,3 +29,15 @@ compile_commands.json
 Testing/
 /.vscode/
 .qtcreator/
+
+# Local development and private machine data
+/install/
+/devel-root/
+/devel-rpms/
+/work/
+/backups/
+*.log
+*.rpm
+.env
+.env.*
+__pycache__/

@@ -60,13 +60,17 @@ int main(int argc, char **argv)
         aboutData.processCommandLine(&parser);
     }
 
-    if (!PLASMA_KEYBOARD_SOUND_ENABLED) {
+    if (!PLASMA_KEYBOARD_SOUNDS_ENABLED) {
         PlasmaKeyboardSettings::self()->setSoundEnabled(false);
     }
 
     if (!PLASMA_KEYBOARD_VIBRATION_ENABLED) {
         PlasmaKeyboardSettings::self()->setVibrationEnabled(false);
     }
+
+    // A floating keyboard must keep compact key proportions regardless of the
+    // docked keyboard setting. This override is intentionally not saved.
+    PlasmaKeyboardSettings::self()->setPanelFillScreenWidth(false);
 
     // Listen to config updates from kcm, and reparse
     auto watcher = KConfigWatcher::create(PlasmaKeyboardSettings::self()->sharedConfig());
@@ -77,6 +81,14 @@ int main(int argc, char **argv)
         [](const KConfigGroup &, const QByteArrayList &) {
             PlasmaKeyboardSettings::self()->sharedConfig()->reparseConfiguration();
             PlasmaKeyboardSettings::self()->load();
+            // Settings reloads must not enable features omitted from this build.
+            if (!PLASMA_KEYBOARD_SOUNDS_ENABLED) {
+                PlasmaKeyboardSettings::self()->setSoundEnabled(false);
+            }
+            if (!PLASMA_KEYBOARD_VIBRATION_ENABLED) {
+                PlasmaKeyboardSettings::self()->setVibrationEnabled(false);
+            }
+            PlasmaKeyboardSettings::self()->setPanelFillScreenWidth(false);
         });
     // clang-format on
 
@@ -85,16 +97,18 @@ int main(int argc, char **argv)
 
     QObject::connect(&view, &QQmlApplicationEngine::objectCreated, &application, [](QObject *object) {
         auto window = qobject_cast<QWindow *>(object);
-        const bool initSuccessful = initInputPanelIntegration(window, InputPanelRole::Keyboard);
-
-        if (!initSuccessful) {
-            qCCritical(PlasmaKeyboard)
-                << "Cannot run plasma-keyboard standalone. You can enable it in Plasma's System Settings app, on the “Virtual Keyboard” page.";
+        if (!window) {
+            qCCritical(PlasmaKeyboard) << "The Plasma Keyboard root object is not a window.";
             exit(1);
         }
 
-        window->requestActivate();
-        window->setVisible(true);
+        // The stock keyboard uses the Wayland input-panel role. KWin always docks
+        // that role to the bottom edge and reserves space for it, so moving content
+        // inside the surface causes jitter and still resizes the focused window.
+        // Leave the main keyboard as a normal, focusless xdg-shell tool window.
+        // InputListenerItem controls its visibility when an input-method context is
+        // activated, while KWin's system move operation makes it freely draggable.
+        window->setVisible(false);
     });
     view.load(QUrl(QStringLiteral("qrc:/qt/qml/org/kde/plasma/keyboard/main.qml")));
 

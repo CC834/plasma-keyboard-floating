@@ -59,7 +59,7 @@ if(PLASMA_KEYBOARD_VIBRATION_ENABLED)
     )
 endif()
 
-if(PLASMA_KEYBOARD_SOUND_ENABLED)
+if(PLASMA_KEYBOARD_SOUNDS_ENABLED)
     target_sources(plasma-keyboard PRIVATE
         soundresources.qrc
     )

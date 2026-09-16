@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: 2026 CC834
+# SPDX-License-Identifier: GPL-3.0-only
+[1]
+Description=Floating Plasma Keyboard
+above=true
+aboverule=2
+acceptfocus=false
+acceptfocusrule=2
+desktops=
+desktopsrule=2
+skippager=true
+skippagerrule=2
+skipswitcher=true
+skipswitcherrule=2
+skiptaskbar=true
+skiptaskbarrule=2
+wmclass=org.kde.plasma.keyboard
+wmclassmatch=1

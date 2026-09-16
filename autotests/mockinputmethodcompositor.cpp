@@ -13,6 +13,14 @@
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QWindow>
+#include <QPointer>
+#include <QDBusInterface>
+#include <QDBusPendingCall>
+#include <QSettings>
+#include <QtEndian>
+#include <QtWaylandCompositor/QWaylandSeat>
+#include <QtWaylandCompositor/QWaylandView>
+#include <QtWaylandCompositor/QWaylandSurfaceGrabber>
 #include <QtTest/QTest>
 
 #include <memory>
@@ -460,7 +468,7 @@ private Q_SLOTS:
     void initTestCase()
     {
         // create a temporary folder for test configs
-        if (!m_home.isValid() || !qputenv("HOME", qPrintable(m_home.path()))) {
+        if (!m_home.isValid() || !qputenv("XDG_CONFIG_HOME", qPrintable(m_home.path()))) {
             qFatal("Couldn't create temporary home folder for the test");
             return;
         }
@@ -492,6 +500,26 @@ private Q_SLOTS:
 
         m_xdgShell = std::make_unique<QWaylandXdgShell>(m_compositor.get());
         m_xdgShell->initialize();
+        connect(m_xdgShell.get(), &QWaylandXdgShell::toplevelCreated, this,
+                [this](QWaylandXdgToplevel *toplevel, QWaylandXdgSurface *xdgSurface) {
+            m_toplevel = toplevel;
+            m_surface = xdgSurface->surface();
+            m_view = std::make_unique<QWaylandView>();
+            m_view->setSurface(m_surface);
+            m_view->setOutput(m_output.get());
+            // The keyboard must type without ever receiving seat keyboard focus
+            // or the xdg Activated state, just like the focusless KWin rule.
+            toplevel->sendConfigure(QSize(0, 0), QList<QWaylandXdgToplevel::State>{});
+        });
+        connect(&m_frameTimer, &QTimer::timeout, this, [this] {
+            if (m_view && m_surface) {
+                m_view->advance();
+                m_surface->frameStarted();
+                m_surface->sendFrameCallbacks();
+                wl_display_flush_clients(m_compositor->display());
+            }
+        });
+        m_frameTimer.start(16);
 
         m_inputMethod = std::make_unique<InputMethodV1>(m_compositor.get());
         m_inputMethod->initialize();
@@ -513,6 +541,8 @@ private Q_SLOTS:
         });
         auto env = QProcessEnvironment::systemEnvironment();
         env.insert(u"WAYLAND_DISPLAY"_s, m_socketPath);
+        env.insert(u"QT_QPA_PLATFORM"_s, u"wayland"_s);
+        env.insert(u"QT_QPA_PLATFORMTHEME"_s, u"generic"_s);
         env.insert(u"QT_QUICK_BACKEND"_s, u"software"_s); // Without this plasma-keyboard explodes on alpine for some reason
         m_child->setProcessEnvironment(env);
 
@@ -581,6 +611,284 @@ private Q_SLOTS:
         QTest::qWait(200);
     }
 
+    void testFloatingKeyboardInteractions()
+    {
+        QTRY_VERIFY(m_surface && m_surface->hasContent());
+        QTRY_VERIFY(m_surface->destinationSize().width() > 400);
+        QVERIFY(!m_compositor->defaultSeat()->keyboardFocus());
+        QVERIFY(!m_toplevel->activated());
+        QTest::qWait(300);
+
+        // Save the actual rendered keyboard for visual review.
+        if (qEnvironmentVariableIsSet("FLOATING_KEYBOARD_TEST_IMAGE")) {
+            QWaylandSurfaceGrabber grabber(m_surface);
+            QSignalSpy grabbed(&grabber, &QWaylandSurfaceGrabber::success);
+            grabber.grab();
+            QTRY_COMPARE(grabbed.count(), 1);
+            QVERIFY(qvariant_cast<QImage>(grabbed.first().first()).save(qEnvironmentVariable("FLOATING_KEYBOARD_TEST_IMAGE")));
+        }
+
+        auto *seat = m_compositor->defaultSeat();
+        auto move = [this, seat](QPointF pos) {
+            seat->sendMouseMoveEvent(m_view.get(), pos, pos);
+            wl_display_flush_clients(m_compositor->display());
+            QTest::qWait(40);
+        };
+        auto click = [this, seat, &move](QPointF pos) {
+            move(pos);
+            seat->sendMousePressEvent(Qt::LeftButton);
+            wl_display_flush_clients(m_compositor->display());
+            QTest::qWait(40);
+            seat->sendMouseReleaseEvent(Qt::LeftButton);
+            wl_display_flush_clients(m_compositor->display());
+            QTest::qWait(60);
+        };
+
+        const QSize initialSize = m_surface->destinationSize();
+        qInfo() << "Floating keyboard size" << initialSize;
+        QSignalSpy commitSpy(m_inputMethod->context(), &InputMethodContext::commitStringChanged);
+        // Top letter row, first key (q), below the drag handle.
+        click(QPointF(initialSize.width() * 0.065, initialSize.height() * 0.25));
+        QTRY_COMPARE(commitSpy.count(), 1);
+        QCOMPARE(commitSpy.first().first().toString(), QStringLiteral("q"));
+        qInfo() << "Pointer typed" << commitSpy.first().first();
+        QVERIFY(!m_compositor->defaultSeat()->keyboardFocus());
+
+        // Exercise the actual Wayland touch -> QML resize handler path.
+        QPointF grip(initialSize.width() - 16, initialSize.height() - 16);
+        seat->sendTouchPointPressed(m_surface, 0, grip);
+        seat->sendTouchFrameEvent(m_surface->client());
+        wl_display_flush_clients(m_compositor->display());
+        QTest::qWait(50);
+        for (int dx : {2, 10, 30, 60, 90}) {
+            seat->sendTouchPointMoved(m_surface, 0, grip + QPointF(dx, dx / 3.0));
+            seat->sendTouchFrameEvent(m_surface->client());
+            wl_display_flush_clients(m_compositor->display());
+            QTest::qWait(40);
+        }
+        seat->sendTouchPointReleased(m_surface, 0, grip + QPointF(90, 30));
+        seat->sendTouchFrameEvent(m_surface->client());
+        wl_display_flush_clients(m_compositor->display());
+        QTRY_VERIFY(m_surface->destinationSize().width() > initialSize.width() + 50);
+        QVERIFY(m_surface->destinationSize().height() > initialSize.height());
+
+        const QSize resized = m_surface->destinationSize();
+        move(QPointF(resized.width() - 16, resized.height() - 16));
+        seat->sendMousePressEvent(Qt::LeftButton);
+        wl_display_flush_clients(m_compositor->display());
+        QTest::qWait(50);
+        for (int dx : {2, 10, 30, 60}) {
+            move(QPointF(resized.width() - 16 - dx, resized.height() - 16 - dx / 3.0));
+        }
+        seat->sendMouseReleaseEvent(Qt::LeftButton);
+        wl_display_flush_clients(m_compositor->display());
+        QTRY_VERIFY(m_surface->destinationSize().width() < resized.width() - 30);
+
+        QSignalSpy moveSpy(m_toplevel, &QWaylandXdgToplevel::startMove);
+        move(QPointF(160, 16));
+        seat->sendMousePressEvent(Qt::LeftButton);
+        wl_display_flush_clients(m_compositor->display());
+        QTest::qWait(40);
+        move(QPointF(164, 16));
+        seat->sendMouseReleaseEvent(Qt::LeftButton);
+        wl_display_flush_clients(m_compositor->display());
+        QTRY_COMPARE(moveSpy.count(), 1);
+
+        seat->sendTouchPointPressed(m_surface, 0, QPointF(160, 16));
+        seat->sendTouchFrameEvent(m_surface->client());
+        wl_display_flush_clients(m_compositor->display());
+        QTest::qWait(40);
+        seat->sendTouchPointMoved(m_surface, 0, QPointF(164, 16));
+        seat->sendTouchFrameEvent(m_surface->client());
+        wl_display_flush_clients(m_compositor->display());
+        QTest::qWait(40);
+        seat->sendTouchPointReleased(m_surface, 0, QPointF(164, 16));
+        seat->sendTouchFrameEvent(m_surface->client());
+        wl_display_flush_clients(m_compositor->display());
+        QTRY_COMPARE(moveSpy.count(), 2);
+
+        // Dismiss using the header arrow and ensure a surrounding-text echo
+        // cannot immediately reopen the panel.
+        click(QPointF(m_surface->destinationSize().width() - 16, 16));
+        QTRY_VERIFY(!m_surface || !m_surface->hasContent());
+        auto *context = m_inputMethod->context();
+        for (auto *resource : context->resourceMap()) {
+            context->send_surrounding_text(resource->handle, QStringLiteral("q"), 1, 1);
+        }
+        wl_display_flush_clients(m_compositor->display());
+        QTest::qWait(300);
+        QVERIFY(!m_surface || !m_surface->hasContent());
+
+        // A genuinely new input context should show a usable keyboard again.
+        m_inputMethod->sendDeactivate();
+        wl_display_flush_clients(m_compositor->display());
+        QTest::qWait(250);
+        m_inputMethod->sendActivate();
+        wl_display_flush_clients(m_compositor->display());
+        QTRY_VERIFY(m_surface && m_surface->hasContent());
+        QTest::qWait(200);
+        const QSize reopened = m_surface->destinationSize();
+        QSignalSpy touchCommitSpy(m_inputMethod->context(), &InputMethodContext::commitStringChanged);
+        QPointF qKey(reopened.width() * 0.065, reopened.height() * 0.25);
+        seat->sendTouchPointPressed(m_surface, 0, qKey);
+        seat->sendTouchFrameEvent(m_surface->client());
+        wl_display_flush_clients(m_compositor->display());
+        QTest::qWait(40);
+        seat->sendTouchPointReleased(m_surface, 0, qKey);
+        seat->sendTouchFrameEvent(m_surface->client());
+        wl_display_flush_clients(m_compositor->display());
+        QTRY_COMPARE(touchCommitSpy.count(), 1);
+        QCOMPARE(touchCommitSpy.first().first().toString(), QStringLiteral("q"));
+
+        // The original bottom-row hide key uses Qt's input-method API.
+        click(QPointF(reopened.width() * 0.79, reopened.height() * 0.79));
+        QTRY_VERIFY(!m_surface || !m_surface->hasContent());
+        m_inputMethod->sendDeactivate();
+        wl_display_flush_clients(m_compositor->display());
+        QTest::qWait(250);
+        m_inputMethod->sendActivate();
+        wl_display_flush_clients(m_compositor->display());
+        QTRY_VERIFY(m_surface && m_surface->hasContent());
+        QTest::qWait(200);
+    }
+
+    void testNativeResizePresetsAndManualShow()
+    {
+        auto *seat = m_compositor->defaultSeat();
+        auto move = [this, seat](QPointF pos) {
+            seat->sendMouseMoveEvent(m_view.get(), pos, pos);
+            wl_display_flush_clients(m_compositor->display());
+            QTest::qWait(40);
+        };
+        auto click = [this, seat, &move](QPointF pos) {
+            move(pos);
+            seat->sendMousePressEvent(Qt::LeftButton);
+            wl_display_flush_clients(m_compositor->display());
+            QTest::qWait(40);
+            seat->sendMouseReleaseEvent(Qt::LeftButton);
+            wl_display_flush_clients(m_compositor->display());
+            QTest::qWait(80);
+        };
+        QSignalSpy resizeSpy(m_toplevel, &QWaylandXdgToplevel::startResize);
+        move(QPointF(3, 120));
+        seat->sendMousePressEvent(Qt::LeftButton);
+        wl_display_flush_clients(m_compositor->display());
+        QTest::qWait(40);
+        move(QPointF(6, 120));
+        seat->sendMouseReleaseEvent(Qt::LeftButton);
+        wl_display_flush_clients(m_compositor->display());
+        QTRY_COMPARE(resizeSpy.count(), 1);
+        QCOMPARE(qvariant_cast<Qt::Edges>(resizeSpy.first().at(1)), Qt::Edges(Qt::LeftEdge));
+        m_toplevel->sendConfigure(QSize(620, 360), QList<QWaylandXdgToplevel::State>{});
+        wl_display_flush_clients(m_compositor->display());
+        QTRY_COMPARE(m_surface->destinationSize(), QSize(620, 360));
+
+        // The size preset is reversible and the new shape is persisted.
+        click(QPointF(620 - 90, 18));
+        QTRY_COMPARE(m_surface->destinationSize(), QSize(800, 340));
+        click(QPointF(800 - 90, 18));
+        QTRY_COMPARE(m_surface->destinationSize(), QSize(560, 260));
+        QTest::qWait(400);
+        QSettings settings(QStringLiteral("kde.org"), QStringLiteral("plasma-keyboard"));
+        QTRY_COMPARE_WITH_TIMEOUT(([&settings] { settings.sync(); return settings.value(QStringLiteral("FloatingKeyboard/keyboardWidth")).toInt(); })(), 560, 3000);
+        QCOMPARE(settings.value(QStringLiteral("FloatingKeyboard/keyboardHeight")).toInt(), 260);
+
+        click(QPointF(560 - 54, 18));
+        QTest::qWait(100);
+        KConfig config(QStringLiteral("plasmakeyboardrc"));
+        KConfigGroup general(&config, QStringLiteral("General"));
+        QVERIFY(general.readEntry(QStringLiteral("soundEnabled"), false));
+        click(QPointF(560 - 54, 18));
+        config.reparseConfiguration();
+        QVERIFY(!general.readEntry(QStringLiteral("soundEnabled"), false));
+
+        click(QPointF(560 - 18, 18));
+        QTRY_VERIFY(!m_surface || !m_surface->hasContent());
+        QDBusInterface keyboard(QStringLiteral("org.kde.plasma.keyboard.Floating"), QStringLiteral("/Keyboard"),
+                                QStringLiteral("org.kde.plasma.keyboard.Floating"));
+        QVERIFY(keyboard.isValid());
+        keyboard.asyncCall(QStringLiteral("showKeyboard"));
+        QTRY_VERIFY(m_surface && m_surface->hasContent());
+        QSignalSpy commits(m_inputMethod->context(), &InputMethodContext::commitStringChanged);
+        click(QPointF(560 * 0.065, 260 * 0.25));
+        QTRY_COMPARE(commits.count(), 1);
+        QCOMPARE(commits.first().first().toString(), QStringLiteral("q"));
+        QVERIFY(!seat->keyboardFocus());
+    }
+
+    void testKeyClickAudio()
+    {
+        // Opt in only with an isolated sink monitor; never record a microphone
+        // or the user's normal output. The child inherits PULSE_SINK.
+        const QString monitor = qEnvironmentVariable("FLOATING_KEYBOARD_AUDIO_MONITOR");
+        if (monitor.isEmpty()) {
+            QSKIP("Set FLOATING_KEYBOARD_AUDIO_MONITOR and PULSE_SINK to a private test sink");
+        }
+        QTRY_VERIFY(m_surface && m_surface->hasContent());
+        auto *seat = m_compositor->defaultSeat();
+        const QSize size = m_surface->destinationSize();
+        auto click = [this, seat](QPointF pos) {
+            seat->sendMouseMoveEvent(m_view.get(), pos, pos);
+            wl_display_flush_clients(m_compositor->display());
+            QTest::qWait(40);
+            seat->sendMousePressEvent(Qt::LeftButton);
+            wl_display_flush_clients(m_compositor->display());
+            QTest::qWait(40);
+            seat->sendMouseReleaseEvent(Qt::LeftButton);
+            wl_display_flush_clients(m_compositor->display());
+            QTest::qWait(250);
+        };
+        QProcess capture;
+        capture.start(QStringLiteral("parec"), {QStringLiteral("--device=") + monitor,
+            QStringLiteral("--format=s16le"), QStringLiteral("--rate=48000"), QStringLiteral("--channels=1"),
+            QStringLiteral("--latency-msec=20"), QStringLiteral("--raw")});
+        QVERIFY(capture.waitForStarted());
+        QTest::qWait(1200);
+        QVERIFY(capture.bytesAvailable() > 0);
+        capture.readAllStandardOutput();
+        const QPointF qKey(size.width() * 0.065, size.height() * 0.25);
+        const QPointF speaker(size.width() - 54, 18);
+        QSignalSpy commits(m_inputMethod->context(), &InputMethodContext::commitStringChanged);
+        for (int i = 0; i < 3; ++i) {
+            click(qKey);
+        }
+        QTest::qWait(300);
+        const QByteArray muted = capture.readAllStandardOutput();
+        click(speaker);
+        QTest::qWait(300);
+        capture.readAllStandardOutput();
+        click(qKey);
+        seat->sendTouchPointPressed(m_surface, 0, qKey);
+        seat->sendTouchFrameEvent(m_surface->client());
+        wl_display_flush_clients(m_compositor->display());
+        QTest::qWait(80);
+        seat->sendTouchPointReleased(m_surface, 0, qKey);
+        seat->sendTouchFrameEvent(m_surface->client());
+        wl_display_flush_clients(m_compositor->display());
+        QTest::qWait(300);
+        click(qKey);
+        QTest::qWait(300);
+        const QByteArray audible = capture.readAllStandardOutput();
+        click(speaker);
+        capture.terminate();
+        capture.waitForFinished();
+        auto peak = [](const QByteArray &pcm) {
+            int result = 0;
+            for (qsizetype i = 0; i + 1 < pcm.size(); i += 2) {
+                result = qMax(result, qAbs(int(qFromLittleEndian<qint16>(pcm.constData() + i))));
+            }
+            return result;
+        };
+        qInfo() << "Audio PCM peak: muted" << peak(muted) << "enabled" << peak(audible)
+                << "captured bytes" << muted.size() << audible.size();
+        QVERIFY(muted.size() > 48000);
+        QVERIFY(audible.size() > 48000);
+        QCOMPARE(peak(muted), 0);
+        QVERIFY2(peak(audible) > 200, "Enabling sound must produce actual audio, not just change the setting");
+        QTRY_COMPARE(commits.count(), 6);
+        QVERIFY(!seat->keyboardFocus());
+    }
+
     void testLongPressShowsOverlayPanel()
     {
         QSignalSpy overlaySpy(m_inputPanel.get(), &InputPanelV1::overlayPanelRequested);
@@ -593,6 +901,25 @@ private Q_SLOTS:
         QVERIFY(commitStringSpy.count() || commitStringSpy.wait());
         QCOMPARE(commitStringSpy.count(), 1);
         QCOMPARE(commitStringSpy.first().first().toString(), QStringLiteral("à"));
+    }
+
+    void testTypingAfterOverlay()
+    {
+        QVERIFY(m_surface && m_surface->hasContent());
+        const QSize size = m_surface->destinationSize();
+        auto *seat = m_compositor->defaultSeat();
+        QSignalSpy commits(m_inputMethod->context(), &InputMethodContext::commitStringChanged);
+        seat->sendMouseMoveEvent(m_view.get(), QPointF(size.width() * 0.065, size.height() * 0.25));
+        wl_display_flush_clients(m_compositor->display());
+        QTest::qWait(40);
+        seat->sendMousePressEvent(Qt::LeftButton);
+        wl_display_flush_clients(m_compositor->display());
+        QTest::qWait(40);
+        seat->sendMouseReleaseEvent(Qt::LeftButton);
+        wl_display_flush_clients(m_compositor->display());
+        QTRY_COMPARE(commits.count(), 1);
+        QCOMPARE(commits.first().first().toString(), QStringLiteral("q"));
+        QVERIFY(!seat->keyboardFocus());
     }
 
     /**
@@ -682,6 +1009,8 @@ private Q_SLOTS:
 
     void cleanupTestCase()
     {
+        m_frameTimer.stop();
+        m_view.reset();
         if (m_child) {
             if (m_child->state() != QProcess::NotRunning) {
                 m_child->terminate();
@@ -692,6 +1021,10 @@ private Q_SLOTS:
     }
 
 private:
+    QPointer<QWaylandSurface> m_surface;
+    QPointer<QWaylandXdgToplevel> m_toplevel;
+    std::unique_ptr<QWaylandView> m_view;
+    QTimer m_frameTimer;
     QTemporaryDir m_runtimeDir;
     QTemporaryDir m_home;
     QString m_socketPath;

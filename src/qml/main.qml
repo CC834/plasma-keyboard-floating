@@ -8,6 +8,9 @@
 import QtQuick
 import QtQuick.VirtualKeyboard
 import QtQuick.VirtualKeyboard.Settings
+import QtCore as QtCore
+import QtQuick.Controls as QQC2
+import QtMultimedia
 
 import org.kde.plasma.keyboard
 import org.kde.plasma.keyboard.lib as PlasmaKeyboard
@@ -16,11 +19,72 @@ import org.kde.kirigami as Kirigami
 
 InputPanelWindow {
     id: root
-    height: Screen.height
-    width: Screen.width
-    color: 'transparent'
+    readonly property real screenMargin: Kirigami.Units.gridUnit
+    readonly property real availableScreenWidth: Screen.width > 0 ? Screen.width : 1280
+    readonly property real availableScreenHeight: Screen.height > 0 ? Screen.height : 800
+    minimumWidth: Math.min(440, availableScreenWidth - screenMargin * 2)
+    maximumWidth: Math.max(minimumWidth, availableScreenWidth - screenMargin * 2)
+    minimumHeight: Math.min(220, availableScreenHeight - screenMargin * 2)
+    maximumHeight: Math.max(minimumHeight, Math.min(600, availableScreenHeight - screenMargin * 2))
+    width: 772
+    height: 324
+
+    function fitToScreen() {
+        if (!visible) {
+            return;
+        }
+        width = Math.round(Math.max(minimumWidth, Math.min(maximumWidth, width)));
+        height = Math.round(Math.max(minimumHeight, Math.min(maximumHeight, height)));
+    }
+
+    function resizeKeyboard(w, h) {
+        width = Math.round(Math.max(minimumWidth, Math.min(maximumWidth, w)));
+        height = Math.round(Math.max(minimumHeight, Math.min(maximumHeight, h)));
+    }
+
+    onMaximumWidthChanged: Qt.callLater(fitToScreen)
+    onMaximumHeightChanged: Qt.callLater(fitToScreen)
+    onWidthChanged: saveSizeTimer.restart()
+    onHeightChanged: saveSizeTimer.restart()
+
+    Timer {
+        id: saveSizeTimer
+        interval: 300
+        onTriggered: {
+            if (root.visible) {
+                floatingKeyboardState.keyboardWidth = root.width;
+                floatingKeyboardState.keyboardHeight = root.height;
+            }
+        }
+    }
+
+    color: "transparent"
+
+    // A tool window stays out of the task manager. Not accepting focus is
+    // essential: tapping a key must not take focus from the text field that
+    // owns the input-method context.
+    flags: Qt.Tool | Qt.FramelessWindowHint | Qt.WindowDoesNotAcceptFocus
+
+    QtCore.Settings {
+        id: floatingKeyboardState
+        category: "FloatingKeyboard"
+        property real keyboardScale: 0.9 // Migrate the previous proportional size.
+        property real keyboardWidth: 0
+        property real keyboardHeight: 0
+    }
+
+    Component.onCompleted: {
+        const scale = Number.isFinite(floatingKeyboardState.keyboardScale) ? floatingKeyboardState.keyboardScale : 0.9;
+        const savedWidth = floatingKeyboardState.keyboardWidth;
+        const savedHeight = floatingKeyboardState.keyboardHeight;
+        width = Number.isFinite(savedWidth) && savedWidth > 0 ? savedWidth : 840 * scale + panelWrapper.sidePadding * 2;
+        height = Number.isFinite(savedHeight) && savedHeight > 0 ? savedHeight : 280 * scale + panelWrapper.topPadding + panelWrapper.bottomPadding;
+    }
 
     onVisibleChanged: {
+        if (visible) {
+            Qt.callLater(root.fitToScreen);
+        }
         if (!visible) {
             // Reset keyboard navigation when hidden
             // Note: keyboard property is internal Qt API
@@ -51,6 +115,38 @@ InputPanelWindow {
         }
     }
 
+    // Some distributions build Qt Virtual Keyboard without vkb_sound_effects.
+    // Play feedback directly through Multimedia so the switch works there too.
+    SoundEffect {
+        id: keyClick
+        source: "qrc:/sounds/keyboard_tick2_quiet.wav"
+        volume: 0.7
+        muted: !PlasmaKeyboardSettings.soundEnabled
+        readonly property bool keyPressed: inputPanel.keyboard.activeKey ? inputPanel.keyboard.activeKey.pressed : false
+        onKeyPressedChanged: {
+            if (keyPressed && PlasmaKeyboardSettings.soundEnabled) {
+                keyClick.play();
+            }
+        }
+        onMutedChanged: if (muted) stop()
+    }
+
+    // Avoid duplicate feedback on Qt builds that do include their own player.
+    Binding {
+        target: inputPanel.keyboard.soundEffect
+        property: "enabled"
+        value: false
+    }
+
+    Connections {
+        target: inputPanel.InputContext.inputEngine
+        function onVirtualKeyClicked(key, text, modifiers, isAutoRepeat) {
+            if (isAutoRepeat && inputPanel.keyboard.activeKey && PlasmaKeyboardSettings.soundEnabled) {
+                keyClick.play();
+            }
+        }
+    }
+
     // Unified overlay system for diacritics, emoji, text expansion, etc.
     OverlayWindow {
         id: overlayWindow
@@ -58,10 +154,11 @@ InputPanelWindow {
         onCandidateSelected: (index) => thing.overlayController.commitCandidate(index)
     }
 
-    interactiveRegion: Qt.rect(panelWrapper.x, panelWrapper.y, panelWrapper.width, panelWrapper.height)
+    interactiveRegion: Qt.rect(0, 0, width, height)
 
     Kirigami.ShadowedRectangle {
         id: panelWrapper
+        anchors.fill: parent
 
         LanguagePopup {
             id: languageDialog
@@ -71,46 +168,206 @@ InputPanelWindow {
             onShowSettings: root.showSettings()
         }
 
-        // Whether the panel takes the full width of the screen
-        readonly property bool isFullScreenWidth: PlasmaKeyboardSettings.panelFillScreenWidth
-
         color: PlasmaKeyboard.BreezeConstants.keyboardBackgroundColor
 
         // Provide shadow and radius when the keyboard is detached from edges
         corners {
-            // The window isn't floating, so only curve the top
             bottomLeftRadius: Kirigami.Units.cornerRadius
             bottomRightRadius: Kirigami.Units.cornerRadius
-            topLeftRadius: isFullScreenWidth ? 0 : Kirigami.Units.cornerRadius
-            topRightRadius: isFullScreenWidth ? 0 : Kirigami.Units.cornerRadius
+            topLeftRadius: Kirigami.Units.cornerRadius
+            topRightRadius: Kirigami.Units.cornerRadius
         }
         shadow {
-            size: isFullScreenWidth ? 0 : 16
+            size: 16
             color: Qt.rgba(0, 0, 0, 0.3)
         }
 
-        // Starting x and y centers the panel on the bottom
-        x: (root.width / 2) - (width / 2)
-        y: root.height - height
+        x: 0
+        y: 0
 
-        // Padding for background corners and panel drag area
-        readonly property real padding: isFullScreenWidth ? 0 : Kirigami.Units.largeSpacing
+        // Leave a comfortable touch target above the keys for dragging.
+        readonly property real sidePadding: Kirigami.Units.largeSpacing
+        readonly property real topPadding: Kirigami.Units.gridUnit * 2
+        readonly property real bottomPadding: Kirigami.Units.gridUnit * 2
 
-        // Never let width & height to be 0, otherwise it can cause problems for setting interactiveRegion
-        width: inputPanel.width > 0 ? (inputPanel.width + padding * 2) : 100
-        height: inputPanel.height > 0 ? (inputPanel.height + padding * 2) : 100
+        Item {
+            id: dragArea
+            z: 2
+            anchors {
+                top: parent.top
+                left: parent.left
+                right: sizeButton.left
+            }
+            height: panelWrapper.topPadding
+
+            Rectangle {
+                anchors.centerIn: parent
+                width: Kirigami.Units.gridUnit * 2
+                height: Math.max(4, Kirigami.Units.smallSpacing / 2)
+                radius: height / 2
+                color: Kirigami.Theme.disabledTextColor
+                opacity: 0.75
+            }
+
+            DragHandler {
+                target: null
+                acceptedButtons: Qt.LeftButton
+                cursorShape: Qt.SizeAllCursor
+                dragThreshold: 0
+
+                // Pass the current mouse or touch serial to KWin so it moves
+                // the whole Wayland window, including across output boundaries.
+                onActiveChanged: {
+                    if (active) {
+                        root.startSystemMove();
+                    }
+                }
+            }
+
+        }
+
+        QQC2.ToolButton {
+            id: sizeButton
+            anchors.top: parent.top
+            anchors.right: soundButton.left
+            width: panelWrapper.topPadding
+            height: panelWrapper.topPadding
+            focusPolicy: Qt.NoFocus
+            icon.name: root.width < 650 ? "view-fullscreen" : "view-restore"
+            text: root.width < 650 ? i18n("Wide keyboard") : i18n("Compact keyboard")
+            display: QQC2.AbstractButton.IconOnly
+            onClicked: root.width < 650 ? root.resizeKeyboard(800, 340) : root.resizeKeyboard(560, 260)
+            QQC2.ToolTip.text: text
+            QQC2.ToolTip.visible: hovered
+        }
+
+        QQC2.ToolButton {
+            id: soundButton
+            anchors.top: parent.top
+            anchors.right: hideButton.left
+            width: panelWrapper.topPadding
+            height: panelWrapper.topPadding
+            focusPolicy: Qt.NoFocus
+            icon.name: PlasmaKeyboardSettings.soundEnabled ? "audio-volume-medium" : "audio-volume-muted"
+            text: PlasmaKeyboardSettings.soundEnabled ? i18n("Mute key clicks") : i18n("Enable key clicks")
+            display: QQC2.AbstractButton.IconOnly
+            onClicked: {
+                PlasmaKeyboardSettings.soundEnabled = !PlasmaKeyboardSettings.soundEnabled;
+                PlasmaKeyboardSettings.save();
+            }
+            QQC2.ToolTip.text: text
+            QQC2.ToolTip.visible: hovered
+        }
+
+        QQC2.ToolButton {
+            id: hideButton
+            anchors.top: parent.top
+            anchors.right: parent.right
+            width: panelWrapper.topPadding
+            height: panelWrapper.topPadding
+            focusPolicy: Qt.NoFocus
+            icon.name: "arrow-down"
+            text: i18n("Hide keyboard")
+            display: QQC2.AbstractButton.IconOnly
+            onClicked: thing.hideKeyboard()
+            QQC2.ToolTip.text: text
+            QQC2.ToolTip.visible: hovered
+        }
+
+        Item {
+            id: resizeGrip
+            z: 3
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            width: Kirigami.Units.gridUnit * 2
+            height: Kirigami.Units.gridUnit * 2
+
+            // Three diagonal strokes make the touch-resize affordance visible.
+            Repeater {
+                model: 3
+
+                Rectangle {
+                    required property int index
+                    width: Kirigami.Units.gridUnit * (0.45 + index * 0.25)
+                    height: Math.max(2, Kirigami.Units.smallSpacing / 3)
+                    radius: height / 2
+                    color: Kirigami.Theme.disabledTextColor
+                    opacity: 0.8
+                    rotation: -45
+                    anchors.right: parent.right
+                    anchors.rightMargin: Kirigami.Units.smallSpacing + index * Kirigami.Units.smallSpacing
+                    anchors.bottom: parent.bottom
+                    anchors.bottomMargin: Kirigami.Units.smallSpacing + index * Kirigami.Units.smallSpacing
+                }
+            }
+
+            DragHandler {
+                target: null
+                acceptedButtons: Qt.LeftButton
+                cursorShape: Qt.SizeFDiagCursor
+                dragThreshold: 0
+                property real initialWidth: 0
+                property real initialHeight: 0
+
+                onActiveChanged: {
+                    if (active) {
+                        initialWidth = root.width;
+                        initialHeight = root.height;
+                    } else {
+                        saveSizeTimer.restart();
+                    }
+                }
+                onTranslationChanged: {
+                    if (active) {
+                        root.resizeKeyboard(initialWidth + activeTranslation.x, initialHeight + activeTranslation.y);
+                    }
+                }
+            }
+
+        }
+
+        // Compositor-managed resizing also handles moving the left/top origin.
+        Repeater {
+            model: [Qt.LeftEdge, Qt.RightEdge, Qt.TopEdge, Qt.BottomEdge,
+                Qt.TopEdge | Qt.LeftEdge, Qt.TopEdge | Qt.RightEdge, Qt.BottomEdge | Qt.LeftEdge]
+            delegate: Item {
+                required property int modelData
+                readonly property bool leftEdge: (modelData & Qt.LeftEdge) !== 0
+                readonly property bool rightEdge: (modelData & Qt.RightEdge) !== 0
+                readonly property bool topEdge: (modelData & Qt.TopEdge) !== 0
+                readonly property bool bottomEdge: (modelData & Qt.BottomEdge) !== 0
+                readonly property bool corner: (leftEdge || rightEdge) && (topEdge || bottomEdge)
+                z: 5
+                width: leftEdge || rightEdge ? (corner ? 16 : 8) : parent.width - 32
+                height: topEdge || bottomEdge ? (corner ? 16 : 8) : parent.height - 32
+                x: leftEdge ? 0 : rightEdge ? parent.width - width : 16
+                y: topEdge ? 0 : bottomEdge ? parent.height - height : 16
+                DragHandler {
+                    target: null
+                    dragThreshold: 0
+                    acceptedButtons: Qt.LeftButton
+                    cursorShape: parent.corner ? (parent.leftEdge === parent.topEdge ? Qt.SizeFDiagCursor : Qt.SizeBDiagCursor)
+                        : (parent.leftEdge || parent.rightEdge ? Qt.SizeHorCursor : Qt.SizeVerCursor)
+                    onActiveChanged: if (active) root.startSystemResize(parent.modelData)
+                }
+            }
+        }
 
         InputPanel {
             id: inputPanel
-            anchors {
-                top: parent.top
-                topMargin: parent.padding
-                left: parent.left
-                leftMargin: parent.padding
-            }
+            readonly property real availableWidth: panelWrapper.width - panelWrapper.sidePadding * 2
+            readonly property real availableHeight: Math.max(1, panelWrapper.height - panelWrapper.topPadding - panelWrapper.bottomPadding)
+            readonly property real layoutAspect: Math.max(2.2, Math.min(4.2, availableWidth / availableHeight))
+            width: Math.min(availableWidth, availableHeight * layoutAspect)
+            x: (panelWrapper.width - width) / 2
+            y: panelWrapper.topPadding + (availableHeight - height) / 2
 
-            // height is calculated by InputPanel
-            width: inputPanel.keyboard.style ? inputPanel.keyboard.style.aspectRatio * inputPanel.keyboard.style.targetKeyboardHeight : 0
+            Binding {
+                target: inputPanel.keyboard.style
+                property: "keyboardDesignWidth"
+                value: inputPanel.keyboard.style ? inputPanel.keyboard.style.keyboardDesignHeight * inputPanel.layoutAspect : 2100
+                when: inputPanel.keyboard.style !== null
+            }
 
             focusPolicy: Qt.NoFocus
             externalLanguageSwitchEnabled: true

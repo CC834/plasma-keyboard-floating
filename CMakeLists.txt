@@ -34,6 +34,7 @@ include(KDEGitCommitHooks)
 
 option(PLASMA_KEYBOARD_SOUNDS_ENABLED "Whether to enable sound effect support, requires GPLv3 compliance" ON)
 option(PLASMA_KEYBOARD_VIBRATION_ENABLED "Whether to enable haptic feedback via vibrations, requires GPLv3 compliance" ON)
+option(BUILD_KCM "Build the Plasma Keyboard settings module" ON)
 
 find_package(Qt6 ${QT_MIN_VERSION} REQUIRED COMPONENTS
     Core
@@ -50,10 +51,13 @@ endif()
 find_package(KF6 ${KF6_MIN_VERSION} REQUIRED COMPONENTS
     CoreAddons
     I18n
-    KCMUtils
     Config
     Crash
 )
+
+if(BUILD_KCM)
+    find_package(KF6 ${KF6_MIN_VERSION} REQUIRED COMPONENTS KCMUtils)
+endif()
 
 find_package(PlasmaQuick ${PROJECT_DEP_VERSION} REQUIRED)
 
@@ -70,7 +74,9 @@ find_package(Wayland 1.2 REQUIRED COMPONENTS Client)
 find_package(QtWaylandScanner REQUIRED ${QT_MIN_VERSION})
 find_package(WaylandProtocols 1.19 REQUIRED)
 
-add_subdirectory(kcm)
+if(BUILD_KCM)
+    add_subdirectory(kcm)
+endif()
 add_subdirectory(src)
 if(BUILD_TESTING)
     add_subdirectory(autotests)

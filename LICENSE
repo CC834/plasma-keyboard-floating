@@ -1,0 +1,11 @@
+Floating Plasma Keyboard is a modified version of KDE Plasma Keyboard.
+
+The source tree contains files under several license options. See each
+file's SPDX-License-Identifier and the complete texts in LICENSES/.
+
+The bundled keyboard click (src/sounds/keyboard_tick2_quiet.wav) is licensed
+GPL-3.0-only, copyright 2013 Canonical Ltd. The default sound-enabled build includes
+this GPLv3-only material. The complete GPLv3 text is in LICENSES/GPL-3.0-only.txt.
+
+All inherited copyright and license notices remain in place. New packaging files
+carry their own SPDX notices. No license is granted to third-party trademarks.
