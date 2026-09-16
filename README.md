@@ -3,7 +3,7 @@
 
 # Floating Plasma Keyboard
 
-A small, movable touch keyboard for **KDE Plasma on Wayland**. Drag it where you need it, resize it with your finger, and keep typing into your app.
+A small, movable touch keyboard for **KDE Plasma on Wayland** (Tested on version 44). Drag it where you need it, resize it with your finger, and keep typing into your app.
 
 ![Floating Plasma Keyboard showing its drag handle, size preset, sound toggle, hide button, and touch resize grip](docs/images/floating-keyboard.png)
 
