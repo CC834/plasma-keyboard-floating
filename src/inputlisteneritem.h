@@ -75,6 +75,7 @@ Q_SIGNALS:
 
 private:
     void activateInputFocus();
+    bool wantsKeyboardForCurrentActivation() const;
     bool suggestionsAllowed() const;
     void refreshSuggestions();
     void syncSuggestionPrefix();

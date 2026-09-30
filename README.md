@@ -106,6 +106,26 @@ On Plasma Wayland, the keyboard switches to a compositor-recognized input panel 
 
 This also handles the keyboard starting while the session is already locked. It does not configure the separate SDDM/login screen shown before a user session starts. Rebuild and reinstall the keyboard to get this fix; changing the KWin window rule alone is insufficient.
 
+### Password panel fades when moving to the keyboard
+
+Some Plasma lock-screen versions (including the tested 6.7.5 installation) hide the password UI when a pointer leaves the greeter, and only suspend its fade timer while the pointer remains over it. An external Wayland keyboard is a separate surface, so this can hide the prompt as you move to the keys.
+
+For this affected version, install the companion compatibility fix as your normal user:
+
+```sh
+python3 tools/lockscreen-compat.py install
+```
+
+It takes effect on the next lock. It keeps the password UI visible while the keyboard is visible, including after releasing a touch. The tool creates a managed user package under `$XDG_DATA_HOME/plasma/shells/org.kde.plasma.desktop` (normally `~/.local/share/plasma/shells/org.kde.plasma.desktop`). It copies the small lock-screen component set and uses the installed system package as the fallback for the rest of the desktop shell. It does not change authentication or system files, and refuses unsupported templates or existing custom overrides.
+
+**Re-run after Plasma upgrades** to refresh the copied lock-screen files. If the tool reports that the new template is unsupported, remove the old override before testing the updated system lock screen:
+
+```sh
+python3 tools/lockscreen-compat.py remove
+```
+
+The keyboard itself also handles lock-screen reactivation independently of the desktop mouse/touch appearance setting, so repeated hide/show cycles can reopen the input panel.
+
 ## Using it
 
 | Control | Action |
@@ -133,13 +153,21 @@ This also handles the keyboard starting while the session is already locked. It 
 ```sh
 QT_QPA_PLATFORM=offscreen dbus-run-session -- build/bin/mockinputmethodcompositor
 build/bin/wordsuggestionstest
+python3 -m unittest discover -s autotests -p test_lockscreen_compat.py
+```
+
+On a machine with the affected Plasma lock-screen template, the optional fade regression test runs the real greeter inside a private headless KWin session. It simulates leaving the password panel and checks visibility beyond the fade timeout without locking your desktop:
+
+```sh
+dbus-run-session -- python3 autotests/lockscreen-fade-integration.py before --binary build/bin/plasma-keyboard
+dbus-run-session -- python3 autotests/lockscreen-fade-integration.py after --binary build/bin/plasma-keyboard
 ```
 
 The mock Wayland compositor checks typing without compositor keyboard focus, touch/mouse resizing, moving, hiding/showing, size presets, and accent composition.
 
 The optional audio test is skipped by default. It requires an **isolated output sink**, the test keyboard routed to that sink, and `FLOATING_KEYBOARD_AUDIO_MONITOR` set to that sink's monitor. Never point it at a microphone. Setting `PULSE_SINK` alone is insufficient on some Qt backends.
 
-During local validation, the compositor suite passed **12 checks** and the word-suggestion unit suite passed **6 checks**, including English completion clicks, Swedish touch completions and å/ä/ö keys, cursor/selection/password handling, and captured PCM audio from key taps with silence when muted. The compositor tests also cover repeated lock/unlock transitions, touch typing into password fields, suppression of suggestions, and startup while locked. A separate headless KWin 6.7.5 session confirmed that the input panel is visible while the real Plasma screen locker remains active. Unlock authentication on a physical device still needs user verification. Those are local test results, not a promise of compatibility with every Plasma setup.
+During local validation, the compositor suite passed **13 checks** and the word-suggestion unit suite passed **6 checks**, including English completion clicks, Swedish touch completions and å/ä/ö keys, cursor/selection/password handling, and captured PCM audio from key taps with silence when muted. The compositor tests also cover repeated lock/unlock transitions, touch typing into password fields, suppression of suggestions, and startup while locked. A separate headless KWin 6.7.5 session confirmed that the input panel is visible while the real Plasma screen locker remains active. Five additional installer tests cover preservation of custom files, refresh, removal, and unsupported upgrades. A before/after test using the actual KDE greeter reproduced the pointer-exit fade and kept the patched password UI visible beyond its ten-second fade timer. Unlock authentication on a physical device still needs user verification. Those are local test results, not a promise of compatibility with every Plasma setup.
 
 ## Return to the stock keyboard
 

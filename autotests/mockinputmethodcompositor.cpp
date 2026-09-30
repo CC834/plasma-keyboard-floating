@@ -465,6 +465,17 @@ private:
     InputPanelV1 *m_inputPanel = nullptr;
 };
 
+class MockVirtualKeyboard : public QObject
+{
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.kde.kwin.VirtualKeyboard")
+public Q_SLOTS:
+    bool willShowOnActive() const
+    {
+        return false;
+    }
+};
+
 class MockScreenSaver : public QObject
 {
     Q_OBJECT
@@ -1218,6 +1229,39 @@ private Q_SLOTS:
             QCOMPARE(m_surface->bufferSize(), desktopSize);
             QVERIFY(!m_toplevel->activated());
         }
+    }
+
+    void testLockScreenReactivationWithMousePolicy()
+    {
+        m_screenSaver.setActive(true);
+        QTRY_VERIFY(!m_toplevel && m_surface && m_surface->hasContent());
+        MockVirtualKeyboard keyboardPolicy;
+        auto bus = QDBusConnection::sessionBus();
+        QVERIFY(bus.registerService(QStringLiteral("org.kde.KWin")));
+        QVERIFY(bus.registerObject(QStringLiteral("/VirtualKeyboard"), &keyboardPolicy, QDBusConnection::ExportAllSlots));
+        for (int cycle = 0; cycle < 5; ++cycle) {
+            m_inputMethod->sendDeactivate();
+            QTRY_VERIFY(!m_surface || !m_surface->hasContent());
+            m_inputMethod->sendActivate();
+            QTRY_VERIFY(m_surface && m_surface->hasContent());
+            QVERIFY(!m_toplevel);
+            auto context = m_inputMethod->context();
+            QSignalSpy commits(context, &InputMethodContext::commitStringChanged);
+            auto seat = m_compositor->defaultSeat();
+            const QSize size = m_surface->bufferSize();
+            const QPointF key(0.055 * size.width(), 80 + (size.height() - 116) * 0.125);
+            seat->sendTouchPointPressed(m_surface, 0, key);
+            seat->sendTouchFrameEvent(m_surface->client());
+            seat->sendTouchPointReleased(m_surface, 0, key);
+            seat->sendTouchFrameEvent(m_surface->client());
+            wl_display_flush_clients(m_compositor->display());
+            QTRY_COMPARE(commits.count(), 1);
+            QCOMPARE(commits.first().first().toString(), QStringLiteral("q"));
+        }
+        bus.unregisterObject(QStringLiteral("/VirtualKeyboard"));
+        bus.unregisterService(QStringLiteral("org.kde.KWin"));
+        m_screenSaver.setActive(false);
+        QTRY_VERIFY(m_toplevel && m_surface && m_surface->hasContent());
     }
 
     void testStartupWhileLocked()

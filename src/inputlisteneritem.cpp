@@ -93,7 +93,7 @@ InputListenerItem::InputListenerItem()
             m_hideTimer.stop();
             m_userDismissed = false;
             refreshSuggestions();
-            if (m_input.hasContext() && (panel->lockScreenMode() || kwinWantsKeyboardForCurrentActivation())) {
+            if (m_input.hasContext() && wantsKeyboardForCurrentActivation()) {
                 activateInputFocus();
                 QGuiApplication::inputMethod()->update(Qt::ImQueryAll);
                 panel->show();
@@ -156,7 +156,7 @@ InputListenerItem::InputListenerItem()
             // In KWin's automatic mode, a mouse-focused field deliberately
             // does not summon the keyboard. Honor that decision even though
             // this floating xdg-shell window is not a compositor input panel.
-            if (window()->isVisible() || m_manualShowRequested || kwinWantsKeyboardForCurrentActivation()) {
+            if (window()->isVisible() || m_manualShowRequested || wantsKeyboardForCurrentActivation()) {
                 window()->setVisible(true);
                 QGuiApplication::inputMethod()->show();
             }
@@ -178,7 +178,7 @@ InputListenerItem::InputListenerItem()
             // A field can first gain focus from a mouse, then be tapped without
             // creating a new input context. Honor the updated touch policy, but
             // don't undo an explicit dismissal on a surrounding-text echo.
-            if (!window()->isVisible() && !m_userDismissed && kwinWantsKeyboardForCurrentActivation()) {
+            if (!window()->isVisible() && !m_userDismissed && wantsKeyboardForCurrentActivation()) {
                 activateInputFocus();
                 window()->show();
                 QGuiApplication::inputMethod()->show();
@@ -198,7 +198,7 @@ InputListenerItem::InputListenerItem()
     });
     connect(QGuiApplication::inputMethod(), &QInputMethod::visibleChanged, this, [this] {
         if (QGuiApplication::inputMethod()->isVisible()) {
-            if (m_input.hasContext() && (m_manualShowRequested || kwinWantsKeyboardForCurrentActivation())) {
+            if (m_input.hasContext() && (m_manualShowRequested || wantsKeyboardForCurrentActivation())) {
                 m_hideTimer.stop();
                 window()->setVisible(true);
             }
@@ -318,6 +318,15 @@ void InputListenerItem::activateInputFocus()
     forceActiveFocus();
     QWindowSystemInterface::handleFocusWindowChanged(window());
     QWindowSystemInterface::flushWindowSystemEvents();
+}
+
+bool InputListenerItem::wantsKeyboardForCurrentActivation() const
+{
+    const auto panel = qobject_cast<InputPanelWindow *>(window());
+    // KWin controls whether a real input panel is exposed. Desktop mouse/touch
+    // heuristics must not leave that panel unmapped when the greeter reactivates
+    // its field or the user presses the lock-screen keyboard button.
+    return (panel && panel->lockScreenMode()) || kwinWantsKeyboardForCurrentActivation();
 }
 
 void InputListenerItem::showKeyboard()
