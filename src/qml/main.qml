@@ -52,7 +52,7 @@ InputPanelWindow {
         id: saveSizeTimer
         interval: 300
         onTriggered: {
-            if (root.visible) {
+            if (root.visible && !root.lockScreenMode) {
                 floatingKeyboardState.keyboardWidth = root.width;
                 floatingKeyboardState.keyboardHeight = root.height;
             }
@@ -200,6 +200,8 @@ InputPanelWindow {
 
         Item {
             id: dragArea
+            enabled: !root.lockScreenMode
+            visible: !root.lockScreenMode
             z: 2
             anchors {
                 top: parent.top
@@ -236,6 +238,8 @@ InputPanelWindow {
 
         QQC2.ToolButton {
             id: sizeButton
+            enabled: !root.lockScreenMode
+            visible: !root.lockScreenMode
             anchors.top: parent.top
             anchors.right: soundButton.left
             width: panelWrapper.topPadding
@@ -284,6 +288,8 @@ InputPanelWindow {
 
         Item {
             id: resizeGrip
+            enabled: !root.lockScreenMode
+            visible: !root.lockScreenMode
             z: 3
             anchors.right: parent.right
             anchors.bottom: parent.bottom
@@ -339,6 +345,8 @@ InputPanelWindow {
             model: [Qt.LeftEdge, Qt.RightEdge, Qt.TopEdge, Qt.BottomEdge,
                 Qt.TopEdge | Qt.LeftEdge, Qt.TopEdge | Qt.RightEdge, Qt.BottomEdge | Qt.LeftEdge]
             delegate: Item {
+                enabled: !root.lockScreenMode
+                visible: !root.lockScreenMode
                 required property int modelData
                 readonly property bool leftEdge: (modelData & Qt.LeftEdge) !== 0
                 readonly property bool rightEdge: (modelData & Qt.RightEdge) !== 0

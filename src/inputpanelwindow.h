@@ -18,10 +18,18 @@ class InputPanelWindow : public QQuickWindow
     Q_OBJECT
     QML_ELEMENT
 
+    Q_PROPERTY(bool lockScreenMode READ lockScreenMode NOTIFY lockScreenModeChanged)
     Q_PROPERTY(QRect interactiveRegion READ interactiveRegion WRITE setInteractiveRegion NOTIFY interactiveRegionChanged)
 
 public:
     explicit InputPanelWindow(QWindow *parent = nullptr);
+
+    // Only the main keyboard watches the lock state; overlay windows keep their role.
+    void watchLockScreen();
+    bool lockScreenMode() const
+    {
+        return m_lockScreenMode;
+    }
 
     // The interactive part of the keyboard that is reserved on the screen for the input panel.
     // The space outside of it will be overlaid will have input passed to underlying windows by the compositor.
@@ -41,7 +49,17 @@ public:
 
 Q_SIGNALS:
     void interactiveRegionChanged();
+    void lockScreenModeChanged();
+    void surfaceAboutToChange();
+    void surfaceChanged();
+
+private Q_SLOTS:
+    void setLockScreenMode(bool locked);
 
 private:
+    void queryLockScreen();
     QRect m_interactiveRegion;
+    QRect m_desktopGeometry;
+    bool m_lockScreenMode = false;
+    quint64 m_lockStateRevision = 0;
 };

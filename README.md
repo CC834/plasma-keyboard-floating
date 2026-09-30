@@ -20,6 +20,7 @@ A community modification of [KDE Plasma Keyboard](https://invent.kde.org/plasma/
 - Resizes from its edges and corners; keys adapt to the new shape.
 - Remembers its size and offers compact/wide presets.
 - Types without taking focus away from the text field.
+- Uses a docked input panel on Plasma’s lock screen, then restores floating mode and its size after unlocking.
 - Suggests up to three common completions as you type, using 40,000 bundled words per language.
 - Switches between English and Swedish with the **EN/SV** button or globe key.
 - Provides soft key-click sounds and a speaker button to mute them.
@@ -99,6 +100,12 @@ kwriteconfig6 --file plasmakeyboardrc --group General --key enabledLocales en_US
 
 Completions are ranked by general word frequency and run entirely offline. No typing history is saved or uploaded. These are word completions, not Apple's language model, context-aware next-word prediction, or automatic spelling correction. Suggestions clear when you move inside an existing word or select text, and are disabled for password/sensitive fields and non-prose fields such as URLs, numbers, and terminals.
 
+## Lock screen
+
+On Plasma Wayland, the keyboard switches to a compositor-recognized input panel when the screen locks. Tap the password field or the lock screen’s keyboard button to open it. The panel sits at the bottom of the screen; moving and resizing are available again after unlocking. English/Swedish switching remains available. Word suggestions and opening keyboard settings are disabled while locked.
+
+This also handles the keyboard starting while the session is already locked. It does not configure the separate SDDM/login screen shown before a user session starts. Rebuild and reinstall the keyboard to get this fix; changing the KWin window rule alone is insufficient.
+
 ## Using it
 
 | Control | Action |
@@ -132,7 +139,7 @@ The mock Wayland compositor checks typing without compositor keyboard focus, tou
 
 The optional audio test is skipped by default. It requires an **isolated output sink**, the test keyboard routed to that sink, and `FLOATING_KEYBOARD_AUDIO_MONITOR` set to that sink's monitor. Never point it at a microphone. Setting `PULSE_SINK` alone is insufficient on some Qt backends.
 
-During local validation, the compositor suite passed **10 checks** and the word-suggestion unit suite passed **6 checks**, including English completion clicks, Swedish touch completions and å/ä/ö keys, cursor/selection/password handling, and captured PCM audio from key taps with silence when muted. Those are local test results, not a promise of compatibility with every Plasma setup.
+During local validation, the compositor suite passed **12 checks** and the word-suggestion unit suite passed **6 checks**, including English completion clicks, Swedish touch completions and å/ä/ö keys, cursor/selection/password handling, and captured PCM audio from key taps with silence when muted. The compositor tests also cover repeated lock/unlock transitions, touch typing into password fields, suppression of suggestions, and startup while locked. A separate headless KWin 6.7.5 session confirmed that the input panel is visible while the real Plasma screen locker remains active. Unlock authentication on a physical device still needs user verification. Those are local test results, not a promise of compatibility with every Plasma setup.
 
 ## Return to the stock keyboard
 

@@ -335,6 +335,7 @@ Q_SIGNALS:
     void inputPanelSurfaceCreated();
     void overlayPanelRequested();
     void toplevelPanelRequested();
+    void keyboardSurfaceRequested(QWaylandSurface *surface);
 
 protected:
     void zwp_input_panel_v1_get_input_panel_surface(Resource *resource, uint32_t id, wl_resource *surface) override
@@ -346,8 +347,13 @@ protected:
         }
 
         m_lastSurfaceResource = surface;
+        connect(wlSurface, &QObject::destroyed, this, [this, surface] {
+            if (m_lastSurfaceResource == surface)
+                m_lastSurfaceResource = nullptr;
+        });
         auto *panelSurface = new InputPanelSurface(wlSurface, resource->client(), id, resource->version(), this);
-        connect(panelSurface, &InputPanelSurface::toplevelRequested, this, [this] {
+        connect(panelSurface, &InputPanelSurface::toplevelRequested, this, [this, wlSurface] {
+            Q_EMIT keyboardSurfaceRequested(wlSurface);
             ++m_toplevelPanelCount;
             Q_EMIT toplevelPanelRequested();
         });
@@ -459,6 +465,26 @@ private:
     InputPanelV1 *m_inputPanel = nullptr;
 };
 
+class MockScreenSaver : public QObject
+{
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.freedesktop.ScreenSaver")
+public:
+    bool active = false;
+    void setActive(bool value)
+    {
+        active = value;
+        Q_EMIT ActiveChanged(value);
+    }
+public Q_SLOTS:
+    bool GetActive() const
+    {
+        return active;
+    }
+Q_SIGNALS:
+    void ActiveChanged(bool active);
+};
+
 class MockInputMethodCompositorTest : public QObject
 {
     Q_OBJECT
@@ -469,6 +495,9 @@ public:
 private Q_SLOTS:
     void initTestCase()
     {
+        auto bus = QDBusConnection::sessionBus();
+        QVERIFY2(bus.registerService(QStringLiteral("org.freedesktop.ScreenSaver")), "Run this test inside dbus-run-session");
+        QVERIFY(bus.registerObject(QStringLiteral("/ScreenSaver"), &m_screenSaver, QDBusConnection::ExportAllSlots | QDBusConnection::ExportAllSignals));
         // create a temporary folder for test configs
         if (!m_home.isValid() || !qputenv("XDG_CONFIG_HOME", qPrintable(m_home.path()))) {
             qFatal("Couldn't create temporary home folder for the test");
@@ -518,8 +547,9 @@ private Q_SLOTS:
                 m_view->advance();
                 m_surface->frameStarted();
                 m_surface->sendFrameCallbacks();
-                wl_display_flush_clients(m_compositor->display());
             }
+            // Activation must also reach clients before they have a visible surface.
+            wl_display_flush_clients(m_compositor->display());
         });
         m_frameTimer.start(16);
 
@@ -529,6 +559,12 @@ private Q_SLOTS:
         m_inputPanel = std::make_unique<InputPanelV1>(m_compositor.get());
         m_inputPanel->initialize();
         m_inputMethod->setInputPanel(m_inputPanel.get());
+        connect(m_inputPanel.get(), &InputPanelV1::keyboardSurfaceRequested, this, [this](QWaylandSurface *surface) {
+            m_surface = surface;
+            m_view = std::make_unique<QWaylandView>();
+            m_view->setSurface(surface);
+            m_view->setOutput(m_output.get());
+        });
 
         m_child = std::make_unique<QProcess>();
         connect(m_child.get(), &QProcess::readyReadStandardError, this, [this] {
@@ -1117,6 +1153,91 @@ private Q_SLOTS:
         QVERIFY(!m_toplevel->activated());
     }
 
+    void testLockScreenSurfaceLifecycle()
+    {
+        auto seat = m_compositor->defaultSeat();
+        const QSize desktopSize = m_surface->bufferSize();
+        for (int cycle = 0; cycle < 3; ++cycle) {
+            QPointer<QWaylandSurface> previous = m_surface;
+            const int panels = m_inputPanel->toplevelPanelCount();
+            if (cycle == 1) {
+                m_inputMethod->sendDeactivate();
+                QTest::qWait(250);
+            }
+            m_screenSaver.setActive(true);
+            if (cycle == 1) {
+                QTest::qWait(100);
+                m_inputMethod->sendActivate();
+            }
+            QTRY_VERIFY(m_inputPanel->toplevelPanelCount() > panels);
+            QTRY_VERIFY(m_surface && m_surface != previous && m_surface->hasContent());
+            QTRY_VERIFY(!m_toplevel);
+            QTRY_VERIFY(!previous);
+            QCOMPARE(m_surface->bufferSize(), desktopSize);
+
+            auto context = m_inputMethod->context();
+            QVERIFY(context);
+            QSignalSpy commits(context, &InputMethodContext::commitStringChanged);
+            for (auto resource : context->resourceMap()) {
+                context->send_content_type(resource->handle, 0x40 | 0x80, 8); // hidden/sensitive password
+                context->send_surrounding_text(resource->handle, QString(), 0, 0);
+                context->send_commit_state(resource->handle, 20 + cycle);
+            }
+            wl_display_flush_clients(m_compositor->display());
+            QTest::qWait(100);
+            const QPointF key(0.055 * desktopSize.width(), 80 + (desktopSize.height() - 116) * 0.125);
+            seat->sendTouchPointPressed(m_surface, 0, key);
+            seat->sendTouchFrameEvent(m_surface->client());
+            seat->sendTouchPointReleased(m_surface, 0, key);
+            seat->sendTouchFrameEvent(m_surface->client());
+            wl_display_flush_clients(m_compositor->display());
+            QTRY_COMPARE(commits.count(), 1);
+            QCOMPARE(commits.first().first().toString(), QStringLiteral("q"));
+            QVERIFY(!seat->keyboardFocus());
+
+            // No candidates may be accepted on the lock screen, even if a
+            // greeter omits the password hint or leaves old surrounding text.
+            for (auto resource : context->resourceMap()) {
+                context->send_content_type(resource->handle, 0, 0);
+                context->send_surrounding_text(resource->handle, QStringLiteral("hel"), 3, 3);
+                context->send_commit_state(resource->handle, 30 + cycle);
+            }
+            wl_display_flush_clients(m_compositor->display());
+            QTest::qWait(100);
+            seat->sendMouseMoveEvent(m_view.get(), QPointF(184, 58));
+            seat->sendMousePressEvent(Qt::LeftButton);
+            seat->sendMouseReleaseEvent(Qt::LeftButton);
+            wl_display_flush_clients(m_compositor->display());
+            QTest::qWait(100);
+            QCOMPARE(commits.count(), 1);
+
+            previous = m_surface;
+            m_screenSaver.setActive(false);
+            QTRY_VERIFY(m_toplevel && m_surface && m_surface != previous && m_surface->hasContent());
+            QTRY_VERIFY(!previous);
+            QCOMPARE(m_surface->bufferSize(), desktopSize);
+            QVERIFY(!m_toplevel->activated());
+        }
+    }
+
+    void testStartupWhileLocked()
+    {
+        m_inputMethod->sendDeactivate();
+        m_child->terminate();
+        QVERIFY(m_child->waitForFinished(2000));
+        QTRY_VERIFY(!m_surface);
+        m_screenSaver.setActive(true);
+        const int panels = m_inputPanel->toplevelPanelCount();
+        m_child->start();
+        QVERIFY(m_child->waitForStarted());
+        QTRY_VERIFY(m_inputMethod->context());
+        QTRY_VERIFY(m_inputPanel->toplevelPanelCount() > panels);
+        QTRY_VERIFY(m_surface && m_surface->hasContent());
+        QVERIFY(!m_toplevel);
+        m_screenSaver.setActive(false);
+        QTRY_VERIFY(m_toplevel && m_surface && m_surface->hasContent());
+    }
+
     void cleanupTestCase()
     {
         m_frameTimer.stop();
@@ -1131,6 +1252,7 @@ private Q_SLOTS:
     }
 
 private:
+    MockScreenSaver m_screenSaver;
     QPointer<QWaylandSurface> m_surface;
     QPointer<QWaylandXdgToplevel> m_toplevel;
     std::unique_ptr<QWaylandView> m_view;

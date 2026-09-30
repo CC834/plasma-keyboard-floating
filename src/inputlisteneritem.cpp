@@ -8,6 +8,7 @@
 
 #include "inputlisteneritem.h"
 #include "inputmethod_p.h"
+#include "inputpanelwindow.h"
 #include "logging.h"
 #include "plasmakeyboardsettings.h"
 #include "wordsuggestions.h"
@@ -72,6 +73,34 @@ InputListenerItem::InputListenerItem()
     if (bus.registerService(QStringLiteral("org.kde.plasma.keyboard.Floating"))) {
         bus.registerObject(QStringLiteral("/Keyboard"), this, QDBusConnection::ExportScriptableInvokables);
     }
+
+    connect(this, &QQuickItem::windowChanged, this, [this](QQuickWindow *window) {
+        auto panel = qobject_cast<InputPanelWindow *>(window);
+        if (!panel) {
+            return;
+        }
+        connect(panel, &InputPanelWindow::surfaceAboutToChange, this, [this] {
+            m_hideTimer.stop();
+            m_manualShowRequested = false;
+            m_userDismissed = false;
+            m_overlayController->cancelOverlay();
+            QGuiApplication::inputMethod()->reset();
+            m_suggestionPrefix.clear();
+            m_atWordBoundary = false;
+            refreshSuggestions();
+        });
+        connect(panel, &InputPanelWindow::surfaceChanged, this, [this, panel] {
+            m_hideTimer.stop();
+            m_userDismissed = false;
+            refreshSuggestions();
+            if (m_input.hasContext() && (panel->lockScreenMode() || kwinWantsKeyboardForCurrentActivation())) {
+                activateInputFocus();
+                QGuiApplication::inputMethod()->update(Qt::ImQueryAll);
+                panel->show();
+                QGuiApplication::inputMethod()->show();
+            }
+        });
+    });
 
     // Grab and listen to physical keyboard input
     m_input.setGrabbing(true);
@@ -580,7 +609,9 @@ void InputListenerItem::inputMethodEvent(QInputMethodEvent *event)
 
 bool InputListenerItem::suggestionsAllowed() const
 {
-    if (!m_input.hasContext() || (m_input.contentHint() & (InputPlugin::content_hint_hidden_text | InputPlugin::content_hint_sensitive_data))) {
+    const auto panel = qobject_cast<InputPanelWindow *>(window());
+    if ((panel && panel->lockScreenMode()) || !m_input.hasContext()
+        || (m_input.contentHint() & (InputPlugin::content_hint_hidden_text | InputPlugin::content_hint_sensitive_data))) {
         return false;
     }
     const auto purpose = m_input.contentPurpose();

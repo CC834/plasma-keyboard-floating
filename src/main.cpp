@@ -6,7 +6,7 @@
 */
 
 #include "config-plasma-keyboard.h"
-#include "inputpanelintegration.h"
+#include "inputpanelwindow.h"
 #include "layoutpathhelper.h"
 #include "logging.h"
 #include "plasmakeyboardsettings.h"
@@ -96,7 +96,7 @@ int main(int argc, char **argv)
     KLocalization::setupLocalizedContext(&view);
 
     QObject::connect(&view, &QQmlApplicationEngine::objectCreated, &application, [](QObject *object) {
-        auto window = qobject_cast<QWindow *>(object);
+        auto window = qobject_cast<InputPanelWindow *>(object);
         if (!window) {
             qCCritical(PlasmaKeyboard) << "The Plasma Keyboard root object is not a window.";
             exit(1);
@@ -109,6 +109,7 @@ int main(int argc, char **argv)
         // InputListenerItem controls its visibility when an input-method context is
         // activated, while KWin's system move operation makes it freely draggable.
         window->setVisible(false);
+        window->watchLockScreen();
     });
     view.load(QUrl(QStringLiteral("qrc:/qt/qml/org/kde/plasma/keyboard/main.qml")));
 
